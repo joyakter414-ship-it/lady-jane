@@ -1,0 +1,46 @@
+name: Lady Jane WhatsApp Gateway 24/7
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+  schedule:
+    # Auto-refresh run every 5 hours (GitHub Action maximum job limit is 6h)
+    - cron: '0 */5 * * *'
+
+concurrency:
+  group: lady-jane-gateway
+  cancel-in-progress: true
+
+jobs:
+  run-gateway:
+    name: Run Lady Jane in GitHub Cloud
+    runs-on: ubuntu-latest
+    timeout-minutes: 340 # 5 hours 40 minutes
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: gateway/package.json
+
+      - name: Install Gateway Dependencies
+        run: |
+          cd gateway
+          npm ci --omit=dev
+
+      - name: Start Lady Jane Gateway
+        env:
+          BRAIN_URL: ${{ secrets.BRAIN_URL }}
+          GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          LOG_LEVEL: info
+        run: |
+          cd gateway
+          echo "👑 Starting Lady Jane Gateway in GitHub Cloud..."
+          node src/index.js

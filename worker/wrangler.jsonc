@@ -1,0 +1,32 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "lady-jane",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "lady-jane-db",
+      "database_id": "fc7b95eb-da36-4dc4-b594-f94ddfe32a8b"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BUCKET",
+      "bucket_name": "lady-jane-store"
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+  // Secrets (set with `npx wrangler secret put <NAME>`, never committed):
+  //   DASHBOARD_PASSWORD — login for the web dashboard
+  //   GATEWAY_TOKEN      — shared with the WhatsApp gateway (gateway/.env)
+}

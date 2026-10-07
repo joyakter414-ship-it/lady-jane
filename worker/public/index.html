@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>Lady Jane 👑</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👑</text></svg>" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- Login -->
+  <main id="login" class="login hidden">
+    <form id="login-form" class="card login-card">
+      <div class="crest">👑</div>
+      <h1>Lady Jane</h1>
+      <p class="muted">Your WhatsApp AI, powered by Cloudflare Neurons</p>
+      <input id="password" type="password" placeholder="Dashboard password" autocomplete="current-password" required />
+      <button type="submit">Enter the court</button>
+      <p id="login-error" class="error"></p>
+    </form>
+  </main>
+
+  <!-- App -->
+  <div id="app" class="hidden">
+    <header class="topbar">
+      <div class="brand"><span>👑</span> Lady Jane</div>
+      <nav>
+        <button data-tab="home" class="tab active">Home</button>
+        <button data-tab="chat" class="tab">Talk to her</button>
+        <button data-tab="chats" class="tab">Conversations</button>
+        <button data-tab="rules" class="tab">Rule Book 📜</button>
+        <button data-tab="settings" class="tab">Settings</button>
+      </nav>
+      <button id="logout" class="ghost small">Sign out</button>
+    </header>
+
+    <!-- Home -->
+    <section id="tab-home" class="page">
+      <div class="grid">
+        <div class="card">
+          <h2>WhatsApp</h2>
+          <div id="wa-status" class="status"></div>
+          <div id="wa-qr" class="qr hidden">
+            <img id="wa-qr-img" alt="WhatsApp QR code" />
+            <p class="muted">WhatsApp → <b>Settings</b> → <b>Linked devices</b> → <b>Link a device</b>, then scan.</p>
+          </div>
+          <div id="wa-help" class="muted small-text"></div>
+          <button id="wa-logout" class="danger small hidden">Unlink WhatsApp</button>
+        </div>
+        <div class="card">
+          <h2>Neurons today</h2>
+          <div class="big"><span id="neurons-today">0</span><span class="muted"> / <span id="neurons-free">10,000</span> free</span></div>
+          <div class="bar"><div id="neurons-bar"></div></div>
+          <p class="muted"><span id="requests-today">0</span> replies today · resets 00:00 UTC (6:00 AM Dhaka)</p>
+          <table class="usage"><tbody id="usage-rows"></tbody></table>
+        </div>
+        <div class="card">
+          <h2>Quick switches</h2>
+          <label class="switch"><input type="checkbox" id="quick-enabled" /> <span>Lady Jane answers on WhatsApp</span></label>
+          <p class="muted">Reply mode: <b id="quick-mode"></b></p>
+          <p class="muted">Model: <b id="quick-model"></b></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Test chat -->
+    <section id="tab-chat" class="page hidden">
+      <div class="card chat-card">
+        <div class="chat-head">
+          <h2>Talk to Lady Jane</h2>
+          <button id="chat-reset" class="ghost small">Start afresh</button>
+        </div>
+        <div id="chat-log" class="chat-log"></div>
+        <form id="chat-form" class="chat-form">
+          <input id="chat-input" placeholder="Write to her… (English, বাংলা, anything)" autocomplete="off" />
+          <button type="submit">Send</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- Conversations -->
+    <section id="tab-chats" class="page hidden">
+      <div class="split">
+        <div class="card list-card">
+          <h2>Conversations</h2>
+          <div id="chat-list"></div>
+        </div>
+        <div class="card">
+          <div class="chat-head">
+            <h2 id="conv-title">Select a conversation</h2>
+            <div>
+              <button id="conv-mute" class="ghost small hidden"></button>
+              <button id="conv-clear" class="danger small hidden">Clear history</button>
+            </div>
+          </div>
+          <div id="conv-log" class="chat-log"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Rule Book -->
+    <section id="tab-rules" class="page hidden">
+      <div class="card" style="margin-bottom: 16px;">
+        <div class="chat-head">
+          <div>
+            <h2>Rule Book 📜</h2>
+            <p class="muted small-text">Define what Lady Jane says when certain words appear, or give strict behavioral instructions to her AI brain.</p>
+          </div>
+          <button id="add-rule-toggle" class="small">+ Add New Rule</button>
+        </div>
+
+        <form id="new-rule-form" class="rule-form hidden" style="margin-top: 16px; border-top: 1px solid var(--line); padding-top: 16px;">
+          <h3 style="margin-top: 0; color: var(--gold-2); font-size: 16px;">Create a Rule</h3>
+          <label>Rule Type
+            <select id="rule-type" name="type">
+              <option value="instant">⚡ Instant Auto-Reply (0 Neurons · Instant keyword match)</option>
+              <option value="ai_guideline">🧠 AI Behavior Guideline (Instructs her brain how to reply)</option>
+            </select>
+          </label>
+          <div id="rule-trigger-group">
+            <label id="rule-trigger-label">Trigger Keywords <span class="muted">(comma-separated)</span>
+              <input id="rule-triggers" name="triggers" placeholder="e.g. portfolio, work, কাজ, sample" required />
+            </label>
+          </div>
+          <label id="rule-response-label">Reply Message / Instruction
+            <textarea id="rule-response" name="response" rows="3" placeholder="Write the exact reply she sends, or the instruction she must follow..." required></textarea>
+          </label>
+          <div class="actions" style="margin-top: 12px;">
+            <button type="submit">Save Rule</button>
+            <button type="button" id="cancel-rule-btn" class="ghost small">Cancel</button>
+            <span id="rule-error" class="error"></span>
+          </div>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Active Rules</h2>
+        <div id="rules-list" class="rules-list"></div>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section id="tab-settings" class="page hidden">
+      <form id="settings-form" class="card settings">
+        <h2>Settings</h2>
+
+        <label class="switch"><input type="checkbox" name="enabled" /> <span>Lady Jane answers on WhatsApp</span></label>
+
+        <label>Your name <span class="muted">(she serves you)</span>
+          <input name="ownerName" placeholder="e.g. Akter" />
+        </label>
+
+        <fieldset>
+          <legend>Who may she answer in private chats?</legend>
+          <label class="radio"><input type="radio" name="replyMode" value="self" /> <span><b>Only me</b> — my own “Message yourself” chat (safest)</span></label>
+          <label class="radio"><input type="radio" name="replyMode" value="allowlist" /> <span><b>Me + chosen numbers</b></span></label>
+          <label class="radio"><input type="radio" name="replyMode" value="everyone" /> <span><b>Everyone</b> who messages me ⚠️</span></label>
+          <label>Chosen numbers <span class="muted">(one per line, with country code, e.g. 8801712345678)</span>
+            <textarea name="allowlist" rows="3"></textarea>
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Groups</legend>
+          <label class="switch"><input type="checkbox" name="groupsEnabled" /> <span>Answer in groups when called</span></label>
+          <label>Trigger words <span class="muted">(comma separated; @mentioning or replying to her also works)</span>
+            <input name="triggerWords" />
+          </label>
+        </fieldset>
+
+        <fieldset>
+          <legend>Brain</legend>
+          <label>AI model (Cloudflare Workers AI)
+            <select name="model" id="model-select"></select>
+          </label>
+          <div class="row">
+            <label>Memory (messages)<input name="historyLimit" type="number" min="0" max="40" /></label>
+            <label>Max reply length (tokens)<input name="maxReplyTokens" type="number" min="50" max="2000" /></label>
+            <label>Creativity (0–1.5)<input name="temperature" type="number" min="0" max="1.5" step="0.1" /></label>
+          </div>
+          <label>Extra instructions for Lady Jane
+            <textarea name="extraInstructions" rows="5" placeholder="e.g. I'm a motion designer in Dhaka. If clients ask about prices, say I'll reply personally."></textarea>
+          </label>
+        </fieldset>
+
+        <div class="actions">
+          <button type="submit">Save</button>
+          <span id="settings-saved" class="muted"></span>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
