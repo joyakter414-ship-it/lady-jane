@@ -14,7 +14,7 @@ Named after **Lady Jane Grey**, the "Nine Days' Queen" of England (1553), renown
 [ Lady Jane Gateway (24/7 on GitHub Cloud / Container) ]
        │
        ▼ (Encrypted HTTPS REST Relay)
-[ Lady Jane Brain (Cloudflare Worker) ]
+[ Lady Jane Brain (Cloudflare Pages Functions / Worker) ]
   ├── 📜 Rule Book Engine (Instant Triggers & AI Guidelines)
   ├── 🧠 Cloudflare Workers AI (Llama 4 Scout / Meta Neurons)
   ├── 🗄️ Cloudflare D1 Database (Chat History & Deduplication)
