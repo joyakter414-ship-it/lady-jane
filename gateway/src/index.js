@@ -158,7 +158,14 @@ function contextInfoOf(message) {
   return undefined;
 }
 
-const isMe = (jid) => !!jid && [me.pn, me.lid].includes(jidNormalizedUser(jid));
+const isMe = (jid) => {
+  if (!jid) return false;
+  const norm = jidNormalizedUser(jid);
+  if ([me.pn, me.lid].filter(Boolean).includes(norm)) return true;
+  const p = phoneOf(jid);
+  const myP = phoneOf(me.pn);
+  return Boolean(p && myP && p === myP);
+};
 const phoneOf = (...jids) => {
   const pn = jids.find((j) => j && isPnUser(j));
   return pn ? jidDecode(pn)?.user ?? null : null;
@@ -221,7 +228,7 @@ async function onMessage(msg) {
 
   const decision = await brain("POST", "/gw/message", { json: payload });
   if (decision?.action !== "reply" || !decision.reply) {
-    log.debug({ chat: payload.chatId, reason: decision?.reason }, "Ignored");
+    log.info({ chat: payload.chatId, from: payload.senderPhone, text: payload.text, reason: decision?.reason }, "Message ignored by brain");
     return;
   }
   if (!underRateLimit(chatJid)) {
