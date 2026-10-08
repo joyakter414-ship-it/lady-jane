@@ -284,5 +284,30 @@ async function shutdown(signal) {
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 
+// GitHub Actions 24/7 continuous relay:
+// GitHub jobs have a ~6h runtime limit. At 5 hours, automatically dispatch the next runner.
+// Concurrency (cancel-in-progress: true) will seamlessly replace this runner with zero downtime.
+if (process.env.GH_PAT && process.env.GITHUB_REPOSITORY) {
+  const RELAY_AFTER_MS = 5 * 60 * 60 * 1000; // 5 hours
+  setTimeout(async () => {
+    log.info("🔄 5 hours elapsed. Dispatching next GitHub relay runner for continuous 24/7 uptime...");
+    try {
+      const res = await fetch(`https://api.github.com/repos/${process.env.GITHUB_REPOSITORY}/actions/workflows/gateway.yml/dispatches`, {
+        method: "POST",
+        headers: {
+          Authorization: `token ${process.env.GH_PAT}`,
+          Accept: "application/vnd.github.v3+json",
+          "User-Agent": "Lady-Jane-Gateway",
+        },
+        body: JSON.stringify({ ref: "main" }),
+      });
+      log.info(`Relay runner dispatched: HTTP ${res.status}`);
+    } catch (e) {
+      log.error({ err: String(e) }, "Failed to trigger relay runner");
+    }
+  }, RELAY_AFTER_MS).unref();
+}
+
 log.info("👑 Lady Jane gateway starting…");
 start().catch(fatalRetry);
+

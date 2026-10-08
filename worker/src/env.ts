@@ -8,4 +8,9 @@ export interface AppEnv {
   DASHBOARD_PASSWORD: string;
   /** Shared token the WhatsApp gateway uses to talk to the brain (secret). */
   GATEWAY_TOKEN: string;
+  /** GitHub Personal Access Token to trigger workflow dispatches (secret). */
+  GITHUB_PAT?: string;
+  /** GitHub repository owner/name (secret or var). */
+  GITHUB_REPO?: string;
 }
+

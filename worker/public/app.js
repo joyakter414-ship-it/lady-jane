@@ -95,21 +95,40 @@ async function refreshOverview() {
   overview = await api("GET", "/api/overview");
   const { gateway, usage, settings, models } = overview;
 
+  const isOnline = Boolean(gateway.online);
+  const isOpen = isOnline && gateway.state === "open";
+  const isQr = isOnline && gateway.state === "qr" && Boolean(gateway.qr);
+
   let [dot, label] = STATES[gateway.state] || ["off", gateway.state];
-  if (!gateway.online && gateway.state !== "never_connected") [dot, label] = ["off", "Gateway offline"];
+  if (!isOnline && gateway.state !== "never_connected") {
+    [dot, label] = ["off", "Gateway offline (runner sleeping)"];
+  }
   const status = $("#wa-status");
   status.replaceChildren(el("span", `dot ${dot}`), el("span", null, label));
-  if (gateway.online && gateway.state === "open" && gateway.me?.phone) {
+  if (isOpen && gateway.me?.phone) {
     status.append(el("span", "muted", ` as +${gateway.me.phone}${gateway.me.name ? ` (${gateway.me.name})` : ""}`));
+  } else if (!isOnline && gateway.me?.phone) {
+    status.append(el("span", "muted", ` (last linked: +${gateway.me.phone}${gateway.me.name ? ` - ${gateway.me.name}` : ""})`));
   }
 
-  const showQr = gateway.online && gateway.state === "qr" && gateway.qr;
-  $("#wa-qr").classList.toggle("hidden", !showQr);
-  if (showQr && $("#wa-qr-img").src !== gateway.qr) $("#wa-qr-img").src = gateway.qr;
-  $("#wa-logout").classList.toggle("hidden", !(gateway.online && gateway.state === "open"));
-  $("#wa-help").textContent = !gateway.online
-    ? "Start the gateway (see README) and this page will show the QR code to link your WhatsApp."
+  // QR Code display
+  $("#wa-qr").classList.toggle("hidden", !isQr);
+  if (isQr && $("#wa-qr-img").src !== gateway.qr) {
+    $("#wa-qr-img").src = gateway.qr;
+  }
+
+  // Status help / details
+  $("#wa-help").textContent = !isOnline
+    ? "Cloud runner is resting. Click 'Wake Up Cloud Gateway' below to start her instantly."
     : gateway.detail || (gateway.at ? `Last heartbeat ${fmtTime(gateway.at)}` : "");
+
+  // Action buttons
+  $("#wa-logout").classList.toggle("hidden", !isOpen);
+  // Show reset if an account is linked or gateway previously connected
+  const hasLinkedAccount = Boolean(gateway.me?.phone || gateway.state === "open");
+  $("#wa-reset").classList.toggle("hidden", !hasLinkedAccount);
+  $("#wa-wake").classList.toggle("hidden", isOnline);
+  if ($("#wa-wake-head")) $("#wa-wake-head").classList.toggle("hidden", isOnline);
 
   $("#neurons-today").textContent = fmtNum(usage.today.neurons);
   $("#neurons-free").textContent = fmtNum(usage.freePerDay);
@@ -133,10 +152,47 @@ $("#quick-enabled").addEventListener("change", async (e) => {
   refreshOverview();
 });
 
+async function wakeGateway() {
+  const btn = $("#wa-wake");
+  const headBtn = $("#wa-wake-head");
+  if (btn) { btn.disabled = true; btn.textContent = "Waking up runner…"; }
+  if (headBtn) { headBtn.disabled = true; headBtn.textContent = "Waking up…"; }
+  try {
+    const r = await api("POST", "/api/gateway/start");
+    alert(r.message || "Lady Jane cloud runner dispatched! Connecting within 30-45 seconds.");
+  } catch (err) {
+    alert("Could not start cloud runner: " + err.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "▶ Wake Up Cloud Gateway"; }
+    if (headBtn) { headBtn.disabled = false; headBtn.textContent = "▶ Wake Runner"; }
+    await refreshOverview().catch(() => {});
+  }
+}
+
+$("#wa-wake")?.addEventListener("click", wakeGateway);
+$("#wa-wake-head")?.addEventListener("click", wakeGateway);
+
 $("#wa-logout").addEventListener("click", async () => {
-  if (!confirm("Unlink Lady Jane from your WhatsApp? You'll need to scan a new QR code to reconnect.")) return;
-  const r = await api("POST", "/api/gateway/logout");
-  alert(r.note);
+  if (!confirm("Sign out of WhatsApp? Lady Jane will disconnect and stop replying until you scan a new QR code.")) return;
+  try {
+    const r = await api("POST", "/api/gateway/logout");
+    alert(r.note || "WhatsApp unlinked.");
+    await refreshOverview();
+  } catch (err) {
+    alert("Error: " + err.message);
+  }
+});
+
+$("#wa-reset").addEventListener("click", async () => {
+  if (!confirm("Unlink and delete saved WhatsApp session from Cloud storage?\n\nUse this to connect a different WhatsApp account or reset your connection.")) return;
+  try {
+    const r = await api("POST", "/api/session/reset");
+    alert(r.note || "Session deleted. Starting cloud runner for a new QR code...");
+    await api("POST", "/api/gateway/start").catch(() => {});
+    await refreshOverview();
+  } catch (err) {
+    alert("Error: " + err.message);
+  }
 });
 
 // ─── Talk to her ─────────────────────────────────────────────────────────────

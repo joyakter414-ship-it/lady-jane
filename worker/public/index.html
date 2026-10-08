@@ -38,15 +38,24 @@
     <!-- Home -->
     <section id="tab-home" class="page">
       <div class="grid">
-        <div class="card">
-          <h2>WhatsApp</h2>
+        <div class="card" id="card-whatsapp">
+          <div class="chat-head">
+            <h2>WhatsApp</h2>
+            <button id="wa-wake-head" class="small ghost hidden">▶ Wake Runner</button>
+          </div>
           <div id="wa-status" class="status"></div>
           <div id="wa-qr" class="qr hidden">
             <img id="wa-qr-img" alt="WhatsApp QR code" />
-            <p class="muted">WhatsApp → <b>Settings</b> → <b>Linked devices</b> → <b>Link a device</b>, then scan.</p>
+            <p class="muted" style="margin-top: 8px;">
+              WhatsApp → <b>Settings</b> → <b>Linked devices</b> → <b>Link a device</b>, then scan this code.
+            </p>
           </div>
           <div id="wa-help" class="muted small-text"></div>
-          <button id="wa-logout" class="danger small hidden">Unlink WhatsApp</button>
+          <div class="actions" style="margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap;">
+            <button id="wa-logout" class="danger small hidden">Sign Out WhatsApp</button>
+            <button id="wa-reset" class="ghost small danger hidden">Unlink & Reset QR</button>
+            <button id="wa-wake" class="small hidden" style="background: var(--gold-2); color: #111; font-weight: 600;">▶ Wake Up Cloud Gateway</button>
+          </div>
         </div>
         <div class="card">
           <h2>Neurons today</h2>

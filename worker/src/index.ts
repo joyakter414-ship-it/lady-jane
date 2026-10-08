@@ -141,9 +141,48 @@ async function dashboardRoutes(request: Request, env: AppEnv, url: URL): Promise
       await env.DB.prepare("UPDATE chats SET muted = ? WHERE chat_id = ?").bind(muted ? 1 : 0, chat).run();
       return json({ ok: true });
     }
-    case "POST /api/gateway/logout": {
+    case "POST /api/gateway/start": {
+      if (!env.GITHUB_PAT) {
+        return json({ error: "GITHUB_PAT secret is not configured" }, 400);
+      }
+      const repo = env.GITHUB_REPO || "joyakter414-ship-it/lady-jane";
+      try {
+        const ghRes = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/gateway.yml/dispatches`, {
+          method: "POST",
+          headers: {
+            "Authorization": `token ${env.GITHUB_PAT}`,
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "Lady-Jane-Brain",
+          },
+          body: JSON.stringify({ ref: "main" }),
+        });
+        if (!ghRes.ok) {
+          const errText = await ghRes.text();
+          return json({ error: `GitHub API error: ${ghRes.status} ${errText}` }, 500);
+        }
+        return json({ ok: true, message: "Lady Jane cloud runner dispatched! Connecting within 30-45 seconds." });
+      } catch (err) {
+        return json({ error: `Failed to dispatch runner: ${String(err)}` }, 500);
+      }
+    }
+    case "POST /api/gateway/logout":
+    case "POST /api/session/reset": {
+      // 1. Permanently delete WhatsApp session from R2 storage
+      await env.BUCKET.delete(SESSION_KEY).catch(() => {});
+      // 2. Clear stored user identity in KV
+      await kvSet(env, "gateway", {
+        state: "logged_out",
+        qr: null,
+        me: null,
+        detail: "WhatsApp unlinked by user. Scan new QR code to connect.",
+        at: Date.now(),
+      });
+      // 3. Command any running gateway to disconnect and wipe local auth
       await kvSet(env, "gateway_command", { cmd: "logout" });
-      return json({ ok: true, note: "The gateway will log out of WhatsApp on its next heartbeat (within ~30s)." });
+      return json({
+        ok: true,
+        note: "WhatsApp unlinked and session wiped from storage! A fresh QR code will appear to link your WhatsApp.",
+      });
     }
     case "GET /api/rules": {
       return json({ rules: await getRules(env) });

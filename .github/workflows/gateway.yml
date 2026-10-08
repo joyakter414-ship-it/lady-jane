@@ -39,8 +39,33 @@ jobs:
           BRAIN_URL: ${{ secrets.BRAIN_URL }}
           GATEWAY_TOKEN: ${{ secrets.GATEWAY_TOKEN }}
           SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           LOG_LEVEL: info
         run: |
+          date +%s > /tmp/runner_start_epoch
           cd gateway
           echo "👑 Starting Lady Jane Gateway in GitHub Cloud..."
           node src/index.js
+
+      - name: Auto-Relay to Next Runner (24/7 Continuous Loop)
+        if: always()
+        run: |
+          START=$(cat /tmp/runner_start_epoch 2>/dev/null || echo 0)
+          NOW=$(date +%s)
+          DIFF=$((NOW - START))
+          echo "Runner ran for $DIFF seconds."
+          # Only trigger relay if runner ran for at least 60 seconds (prevents crash loops)
+          if [ "$DIFF" -ge 60 ]; then
+            echo "🔄 Dispatching next 24/7 relay runner..."
+            sleep 3
+            curl -s -X POST \
+              -H "Authorization: token ${{ secrets.GH_PAT }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              https://api.github.com/repos/${{ github.repository }}/actions/workflows/gateway.yml/dispatches \
+              -d '{"ref":"main"}' || true
+            echo "✅ Relay request sent."
+          else
+            echo "⚠️ Runner terminated too quickly ($DIFF s). Skipping auto-relay to prevent infinite crash loop."
+          fi
+

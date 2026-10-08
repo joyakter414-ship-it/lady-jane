@@ -1,4 +1,4 @@
-// src/db.ts
+// worker/src/db.ts
 async function kvGet(env, key) {
   const row = await env.DB.prepare("SELECT value FROM kv WHERE key = ?").bind(key).first();
   return row ? JSON.parse(row.value) : null;
@@ -82,7 +82,7 @@ async function deleteRule(env, id) {
   return (res.meta.changes ?? 0) > 0;
 }
 
-// src/persona.ts
+// worker/src/persona.ts
 function buildSystemPrompt(s, ctx) {
   const owner = s.ownerName?.trim() || "my owner";
   const lines = [
@@ -112,7 +112,7 @@ function buildSystemPrompt(s, ctx) {
   return lines.join("\n");
 }
 
-// src/providers/workers-ai.ts
+// worker/src/providers/workers-ai.ts
 var workersAi = {
   id: "workers-ai",
   async generate(env, opts) {
@@ -128,7 +128,7 @@ var workersAi = {
   }
 };
 
-// src/providers/index.ts
+// worker/src/providers/index.ts
 var PROVIDERS = {
   [workersAi.id]: workersAi
 };
@@ -136,7 +136,7 @@ function getProvider(id) {
   return PROVIDERS[id] ?? workersAi;
 }
 
-// src/settings.ts
+// worker/src/settings.ts
 var DEFAULT_SETTINGS = {
   enabled: true,
   provider: "workers-ai",
@@ -189,7 +189,7 @@ function sanitize(s) {
   };
 }
 
-// src/brain.ts
+// worker/src/brain.ts
 var HELP_TEXT = "*Lady Jane* at your service \u{1F451}\n\n- Just write to me and I shall answer.\n- */reset* \u2014 forget our conversation and start afresh.\n- */help* \u2014 show this message.";
 function matchesTriggers(text, triggers) {
   const words = triggers.split(/[,;\n]/).map((t) => t.trim().toLowerCase()).filter(Boolean);
@@ -337,7 +337,7 @@ async function generateReply(env, s, rules, c) {
   }
 }
 
-// src/index.ts
+// worker/src/index.ts
 var SESSION_KEY = "whatsapp/session.bin";
 var FREE_NEURONS_PER_DAY = 1e4;
 var GATEWAY_OFFLINE_AFTER_MS = 9e4;
@@ -454,9 +454,46 @@ async function dashboardRoutes(request, env, url) {
       await env.DB.prepare("UPDATE chats SET muted = ? WHERE chat_id = ?").bind(muted ? 1 : 0, chat).run();
       return json({ ok: true });
     }
-    case "POST /api/gateway/logout": {
+    case "POST /api/gateway/start": {
+      if (!env.GITHUB_PAT) {
+        return json({ error: "GITHUB_PAT secret is not configured" }, 400);
+      }
+      const repo = env.GITHUB_REPO || "joyakter414-ship-it/lady-jane";
+      try {
+        const ghRes = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/gateway.yml/dispatches`, {
+          method: "POST",
+          headers: {
+            "Authorization": `token ${env.GITHUB_PAT}`,
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "Lady-Jane-Brain"
+          },
+          body: JSON.stringify({ ref: "main" })
+        });
+        if (!ghRes.ok) {
+          const errText = await ghRes.text();
+          return json({ error: `GitHub API error: ${ghRes.status} ${errText}` }, 500);
+        }
+        return json({ ok: true, message: "Lady Jane cloud runner dispatched! Connecting within 30-45 seconds." });
+      } catch (err) {
+        return json({ error: `Failed to dispatch runner: ${String(err)}` }, 500);
+      }
+    }
+    case "POST /api/gateway/logout":
+    case "POST /api/session/reset": {
+      await env.BUCKET.delete(SESSION_KEY).catch(() => {
+      });
+      await kvSet(env, "gateway", {
+        state: "logged_out",
+        qr: null,
+        me: null,
+        detail: "WhatsApp unlinked by user. Scan new QR code to connect.",
+        at: Date.now()
+      });
       await kvSet(env, "gateway_command", { cmd: "logout" });
-      return json({ ok: true, note: "The gateway will log out of WhatsApp on its next heartbeat (within ~30s)." });
+      return json({
+        ok: true,
+        note: "WhatsApp unlinked and session wiped from storage! A fresh QR code will appear to link your WhatsApp."
+      });
     }
     case "GET /api/rules": {
       return json({ rules: await getRules(env) });
