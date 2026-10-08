@@ -49,7 +49,7 @@ jobs:
           node src/index.js
 
       - name: Auto-Relay to Next Runner (24/7 Continuous Loop)
-        if: always()
+        if: '!cancelled()'
         run: |
           START=$(cat /tmp/runner_start_epoch 2>/dev/null || echo 0)
           NOW=$(date +%s)
