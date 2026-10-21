@@ -11,7 +11,7 @@ async function kvSet(env, key, value) {
 async function kvDelete(env, key) {
   await env.DB.prepare("DELETE FROM kv WHERE key = ?").bind(key).run();
 }
-async function insertMessage(env, m) {
+async function insertMessage2(env, m) {
   const res = await env.DB.prepare(
     `INSERT OR IGNORE INTO messages (id, chat_id, role, sender, sender_name, content, source, model, neurons, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -25,7 +25,7 @@ async function recentMessages(env, chatId, limit, excludeId) {
   ).bind(chatId, excludeId ?? "", limit).all();
   return results.reverse();
 }
-async function upsertChat(env, chatId, name, isGroup) {
+async function upsertChat2(env, chatId, name, isGroup) {
   const row = await env.DB.prepare(
     `INSERT INTO chats (chat_id, name, is_group, last_at) VALUES (?1, ?2, ?3, ?4)
      ON CONFLICT(chat_id) DO UPDATE SET name = COALESCE(?2, name), last_at = ?4
@@ -218,9 +218,9 @@ async function handleIncoming(env, m) {
   const s = await getSettings(env);
   const isOutgoing = m.fromMe && !m.isSelfChat;
   const chatName = m.chatName ?? (isOutgoing ? null : m.senderName ?? null);
-  const { muted } = await upsertChat(env, m.chatId, chatName, m.isGroup);
+  const { muted } = await upsertChat2(env, m.chatId, chatName, m.isGroup);
   const msgId = `wa:${m.chatId}:${m.id}`;
-  const isNew = await insertMessage(env, {
+  const isNew = await insertMessage2(env, {
     id: msgId,
     chat_id: m.chatId,
     role: isOutgoing ? "assistant" : "user",
@@ -251,7 +251,7 @@ async function handleIncoming(env, m) {
   const instantMatch = rules.find((r) => r.type === "instant" && matchesTriggers(m.text, r.triggers));
   if (instantMatch) {
     const reply = instantMatch.response;
-    await insertMessage(env, {
+    await insertMessage2(env, {
       id: `rule:${crypto.randomUUID()}`,
       chat_id: m.chatId,
       role: "assistant",
@@ -277,9 +277,9 @@ async function handleIncoming(env, m) {
 async function handleDashboardChat(env, text) {
   const s = await getSettings(env);
   const chatId = "dashboard";
-  await upsertChat(env, chatId, "Dashboard", false);
+  await upsertChat2(env, chatId, "Dashboard", false);
   const msgId = `dash:${crypto.randomUUID()}`;
-  await insertMessage(env, {
+  await insertMessage2(env, {
     id: msgId,
     chat_id: chatId,
     role: "user",
@@ -293,7 +293,7 @@ async function handleDashboardChat(env, text) {
   const instantMatch = rules.find((r) => r.type === "instant" && matchesTriggers(text, r.triggers));
   if (instantMatch) {
     const reply = instantMatch.response;
-    await insertMessage(env, {
+    await insertMessage2(env, {
       id: `rule:${crypto.randomUUID()}`,
       chat_id: chatId,
       role: "assistant",
@@ -328,7 +328,7 @@ async function generateReply(env, s, rules, c) {
       temperature: s.temperature
     });
     await Promise.all([
-      insertMessage(env, {
+      insertMessage2(env, {
         id: `ai:${crypto.randomUUID()}`,
         chat_id: c.chatId,
         role: "assistant",
@@ -389,7 +389,18 @@ async function gatewayRoutes(request, env, url) {
       await kvSet(env, "gateway", next);
       const command = await kvGet(env, "gateway_command");
       if (command) await kvDelete(env, "gateway_command");
-      return json({ ok: true, command: command?.cmd ?? null });
+      const outbound = await kvGet(env, "gateway_outbound_queue") || [];
+      if (outbound.length > 0) {
+        await kvDelete(env, "gateway_outbound_queue");
+      }
+      return json({ ok: true, command: command?.cmd ?? null, outbound });
+    }
+    case "GET /gw/outbound": {
+      const outbound = await kvGet(env, "gateway_outbound_queue") || [];
+      if (outbound.length > 0) {
+        await kvDelete(env, "gateway_outbound_queue");
+      }
+      return json({ ok: true, outbound });
     }
     case "GET /gw/session": {
       const obj = await env.BUCKET.get(SESSION_KEY).catch(() => null);
@@ -459,6 +470,29 @@ async function dashboardRoutes(request, env, url) {
       const { text } = await request.json();
       if (!text?.trim()) return json({ error: "Empty message" }, 400);
       return json(await handleDashboardChat(env, text.trim().slice(0, 4e3)));
+    }
+    case "POST /api/messages/send": {
+      const { chat, text } = await request.json();
+      if (!chat || !text?.trim()) return json({ error: "chat and text are required" }, 400);
+      const s = await getSettings(env);
+      const cleanText = text.trim().slice(0, 4e3);
+      const now = Date.now();
+      const msgId = `dash-out:${crypto.randomUUID()}`;
+      await insertMessage(env, {
+        id: msgId,
+        chat_id: chat,
+        role: "assistant",
+        sender: s.ownerName || "You",
+        sender_name: s.ownerName || "You",
+        content: cleanText,
+        source: "dashboard-send",
+        created_at: now
+      });
+      await upsertChat(env, chat, null, chat.includes("@g.us"));
+      const existingQueue = await kvGet(env, "gateway_outbound_queue") || [];
+      existingQueue.push({ id: msgId, jid: chat, text: cleanText });
+      await kvSet(env, "gateway_outbound_queue", existingQueue);
+      return json({ ok: true, id: msgId, text: cleanText, created_at: now });
     }
     case "GET /api/chats": {
       const { results } = await env.DB.prepare(

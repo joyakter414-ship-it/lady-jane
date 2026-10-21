@@ -270,10 +270,44 @@ async function sendStatus(extra = {}) {
       log.warn("Logout requested from the dashboard.");
       await sock.logout().catch((err) => log.error({ err: String(err) }, "Logout failed"));
     }
+    if (Array.isArray(res?.outbound) && res.outbound.length > 0 && sock && state === "open") {
+      for (const item of res.outbound) {
+        await sendOutboundItem(item);
+      }
+    }
   } catch (err) {
     log.warn({ err: String(err) }, "Could not reach the brain");
   }
 }
+
+async function sendOutboundItem(item) {
+  if (!item?.jid || !item?.text || !sock || state !== "open") return;
+  try {
+    await sock.sendPresenceUpdate("composing", item.jid).catch(() => {});
+    await new Promise((r) => setTimeout(r, 350));
+    const sent = await sock.sendMessage(item.jid, { text: item.text });
+    rememberSent(sent?.key?.id);
+    await sock.sendPresenceUpdate("paused", item.jid).catch(() => {});
+    log.info(`📤 Direct message sent to ${item.jid} from dashboard: "${item.text.slice(0, 50)}"`);
+  } catch (err) {
+    log.error({ err: String(err), jid: item.jid }, "Failed to send outbound message from dashboard");
+  }
+}
+
+async function checkOutbound() {
+  if (!sock || state !== "open") return;
+  try {
+    const res = await brain("GET", "/gw/outbound", { retries: 0 });
+    if (Array.isArray(res?.outbound) && res.outbound.length > 0) {
+      for (const item of res.outbound) {
+        await sendOutboundItem(item);
+      }
+    }
+  } catch {}
+}
+
+// Check for direct outbound dashboard messages every 2.5s for near-instant delivery
+setInterval(checkOutbound, 2500).unref();
 
 // Always send heartbeats every 25s (including while in "qr" state) so dashboard never drops offline
 setInterval(() => sendStatus(), HEARTBEAT_MS).unref();

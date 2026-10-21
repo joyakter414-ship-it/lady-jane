@@ -57,7 +57,18 @@ async function gatewayRoutes(request: Request, env: AppEnv, url: URL): Promise<R
       // Hand any pending dashboard command (e.g. logout) back to the gateway.
       const command = await kvGet<{ cmd: string }>(env, "gateway_command");
       if (command) await kvDelete(env, "gateway_command");
-      return json({ ok: true, command: command?.cmd ?? null });
+      const outbound = (await kvGet<Array<{ id: string; jid: string; text: string }>>(env, "gateway_outbound_queue")) || [];
+      if (outbound.length > 0) {
+        await kvDelete(env, "gateway_outbound_queue");
+      }
+      return json({ ok: true, command: command?.cmd ?? null, outbound });
+    }
+    case "GET /gw/outbound": {
+      const outbound = (await kvGet<Array<{ id: string; jid: string; text: string }>>(env, "gateway_outbound_queue")) || [];
+      if (outbound.length > 0) {
+        await kvDelete(env, "gateway_outbound_queue");
+      }
+      return json({ ok: true, outbound });
     }
     case "GET /gw/session": {
       const obj = await env.BUCKET.get(SESSION_KEY).catch(() => null);
@@ -129,6 +140,37 @@ async function dashboardRoutes(request: Request, env: AppEnv, url: URL): Promise
       const { text } = (await request.json()) as { text?: string };
       if (!text?.trim()) return json({ error: "Empty message" }, 400);
       return json(await handleDashboardChat(env, text.trim().slice(0, 4000)));
+    }
+    case "POST /api/messages/send": {
+      const { chat, text } = (await request.json()) as { chat?: string; text?: string };
+      if (!chat || !text?.trim()) return json({ error: "chat and text are required" }, 400);
+
+      const s = await getSettings(env);
+      const cleanText = text.trim().slice(0, 4000);
+      const now = Date.now();
+      const msgId = `dash-out:${crypto.randomUUID()}`;
+
+      // 1. Immediately insert message into DB so conversations view updates instantly
+      await insertMessage(env, {
+        id: msgId,
+        chat_id: chat,
+        role: "assistant",
+        sender: s.ownerName || "You",
+        sender_name: s.ownerName || "You",
+        content: cleanText,
+        source: "dashboard-send",
+        created_at: now,
+      });
+
+      // 2. Update chat timestamp in chats table
+      await upsertChat(env, chat, null, chat.includes("@g.us"));
+
+      // 3. Queue message for gateway runner to dispatch to WhatsApp socket
+      const existingQueue = (await kvGet<Array<{ id: string; jid: string; text: string }>>(env, "gateway_outbound_queue")) || [];
+      existingQueue.push({ id: msgId, jid: chat, text: cleanText });
+      await kvSet(env, "gateway_outbound_queue", existingQueue);
+
+      return json({ ok: true, id: msgId, text: cleanText, created_at: now });
     }
     case "GET /api/chats": {
       const { results } = await env.DB.prepare(

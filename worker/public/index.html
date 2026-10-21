@@ -96,7 +96,7 @@
           <h2>Conversations</h2>
           <div id="chat-list"></div>
         </div>
-        <div class="card">
+        <div class="card chat-card">
           <div class="chat-head">
             <h2 id="conv-title">Select a conversation</h2>
             <div style="display: flex; gap: 8px; align-items: center;">
@@ -106,6 +106,10 @@
             </div>
           </div>
           <div id="conv-log" class="chat-log"></div>
+          <form id="conv-send-form" class="chat-form hidden">
+            <input id="conv-send-input" placeholder="Type a message to send directly to WhatsApp…" autocomplete="off" />
+            <button type="submit" id="conv-send-btn">Send</button>
+          </form>
         </div>
       </div>
     </section>

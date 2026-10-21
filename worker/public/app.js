@@ -308,8 +308,54 @@ async function openChat(c) {
   const log = $("#conv-log");
   log.replaceChildren(...messages.map(bubble));
   log.scrollTop = log.scrollHeight;
+
+  const form = $("#conv-send-form");
+  const input = $("#conv-send-input");
+  if (form && input) {
+    if (c.chat_id === "dashboard") {
+      form.classList.add("hidden");
+    } else {
+      form.classList.remove("hidden");
+      input.placeholder = `Write a message to ${c.name || c.chat_id.split("@")[0]}…`;
+      input.focus();
+    }
+  }
+
   loadChats();
 }
+
+$("#conv-send-form")?.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!currentChat) return;
+  const input = $("#conv-send-input");
+  const btn = $("#conv-send-btn");
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  if (btn) btn.disabled = true;
+
+  // Optimistically append message to log
+  const log = $("#conv-log");
+  const b = bubble({
+    role: "assistant",
+    source: "dashboard-send",
+    sender_name: overview?.settings?.ownerName || "You (Dashboard)",
+    content: text,
+    created_at: Date.now(),
+  });
+  log.append(b);
+  log.scrollTop = log.scrollHeight;
+
+  try {
+    await api("POST", "/api/messages/send", { chat: currentChat.chat_id, text });
+    loadChats();
+  } catch (err) {
+    alert("Failed to send direct WhatsApp message: " + err.message);
+  } finally {
+    if (btn) btn.disabled = false;
+    input.focus();
+  }
+});
 
 $("#conv-clear").addEventListener("click", async () => {
   if (!currentChat || !confirm("Delete Lady Jane's memory of this conversation?")) return;
