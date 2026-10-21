@@ -1,6 +1,6 @@
 import type { AppEnv } from "./env";
 import { handleDashboardChat, handleIncoming, type IncomingMessage } from "./brain";
-import { createRule, deleteRule, getRules, kvDelete, kvGet, kvSet, updateRule } from "./db";
+import { createRule, deleteRule, getRules, insertMessage, kvDelete, kvGet, kvSet, updateRule, upsertChat } from "./db";
 import { getSettings, MODELS, saveSettings, type Settings } from "./settings";
 
 const SESSION_KEY = "whatsapp/session.bin";
@@ -26,7 +26,7 @@ export default {
       return env.ASSETS.fetch(request);
     } catch (err) {
       console.error("Unhandled error", { path: url.pathname, error: String(err), stack: (err as Error)?.stack });
-      return json({ error: "Internal error" }, 500);
+      return json({ error: (err as Error)?.message || "Internal error" }, 500);
     }
   },
 } satisfies ExportedHandler<AppEnv>;

@@ -11,7 +11,7 @@ async function kvSet(env, key, value) {
 async function kvDelete(env, key) {
   await env.DB.prepare("DELETE FROM kv WHERE key = ?").bind(key).run();
 }
-async function insertMessage2(env, m) {
+async function insertMessage(env, m) {
   const res = await env.DB.prepare(
     `INSERT OR IGNORE INTO messages (id, chat_id, role, sender, sender_name, content, source, model, neurons, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -25,7 +25,7 @@ async function recentMessages(env, chatId, limit, excludeId) {
   ).bind(chatId, excludeId ?? "", limit).all();
   return results.reverse();
 }
-async function upsertChat2(env, chatId, name, isGroup) {
+async function upsertChat(env, chatId, name, isGroup) {
   const row = await env.DB.prepare(
     `INSERT INTO chats (chat_id, name, is_group, last_at) VALUES (?1, ?2, ?3, ?4)
      ON CONFLICT(chat_id) DO UPDATE SET name = COALESCE(?2, name), last_at = ?4
@@ -218,9 +218,9 @@ async function handleIncoming(env, m) {
   const s = await getSettings(env);
   const isOutgoing = m.fromMe && !m.isSelfChat;
   const chatName = m.chatName ?? (isOutgoing ? null : m.senderName ?? null);
-  const { muted } = await upsertChat2(env, m.chatId, chatName, m.isGroup);
+  const { muted } = await upsertChat(env, m.chatId, chatName, m.isGroup);
   const msgId = `wa:${m.chatId}:${m.id}`;
-  const isNew = await insertMessage2(env, {
+  const isNew = await insertMessage(env, {
     id: msgId,
     chat_id: m.chatId,
     role: isOutgoing ? "assistant" : "user",
@@ -251,7 +251,7 @@ async function handleIncoming(env, m) {
   const instantMatch = rules.find((r) => r.type === "instant" && matchesTriggers(m.text, r.triggers));
   if (instantMatch) {
     const reply = instantMatch.response;
-    await insertMessage2(env, {
+    await insertMessage(env, {
       id: `rule:${crypto.randomUUID()}`,
       chat_id: m.chatId,
       role: "assistant",
@@ -277,9 +277,9 @@ async function handleIncoming(env, m) {
 async function handleDashboardChat(env, text) {
   const s = await getSettings(env);
   const chatId = "dashboard";
-  await upsertChat2(env, chatId, "Dashboard", false);
+  await upsertChat(env, chatId, "Dashboard", false);
   const msgId = `dash:${crypto.randomUUID()}`;
-  await insertMessage2(env, {
+  await insertMessage(env, {
     id: msgId,
     chat_id: chatId,
     role: "user",
@@ -293,7 +293,7 @@ async function handleDashboardChat(env, text) {
   const instantMatch = rules.find((r) => r.type === "instant" && matchesTriggers(text, r.triggers));
   if (instantMatch) {
     const reply = instantMatch.response;
-    await insertMessage2(env, {
+    await insertMessage(env, {
       id: `rule:${crypto.randomUUID()}`,
       chat_id: chatId,
       role: "assistant",
@@ -328,7 +328,7 @@ async function generateReply(env, s, rules, c) {
       temperature: s.temperature
     });
     await Promise.all([
-      insertMessage2(env, {
+      insertMessage(env, {
         id: `ai:${crypto.randomUUID()}`,
         chat_id: c.chatId,
         role: "assistant",
@@ -363,7 +363,7 @@ var index_default = {
       return env.ASSETS.fetch(request);
     } catch (err) {
       console.error("Unhandled error", { path: url.pathname, error: String(err), stack: err?.stack });
-      return json({ error: "Internal error" }, 500);
+      return json({ error: err?.message || "Internal error" }, 500);
     }
   }
 };
