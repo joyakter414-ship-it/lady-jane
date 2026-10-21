@@ -176,6 +176,7 @@ function sanitize(s) {
   };
   return {
     enabled: Boolean(s.enabled),
+    instantReplyPaused: Boolean(s.instantReplyPaused),
     provider: s.provider === "workers-ai" ? s.provider : "workers-ai",
     model: MODELS.some((m) => m.id === s.model) ? s.model : DEFAULT_SETTINGS.model,
     replyMode: ["self", "allowlist", "everyone"].includes(s.replyMode) ? s.replyMode : "self",
