@@ -348,9 +348,15 @@ function bubble(m) {
   const b = el("div", `msg ${m.role}`, m.content);
   let sender = "Them";
   if (isMe) {
-    sender = m.source === "whatsapp-device" ? (overview?.settings?.ownerName || "You (Phone)") : "Lady Jane";
+    if (m.source === "whatsapp-device") {
+      sender = `${overview?.settings?.ownerName || "You"} (Phone 📱)`;
+    } else if (m.source === "dashboard-send") {
+      sender = `${overview?.settings?.ownerName || "You"} (Dashboard 💻)`;
+    } else {
+      sender = "Lady Jane 👑";
+    }
   } else {
-    sender = m.sender_name || (m.sender ? `+${m.sender}` : "Them");
+    sender = m.sender_name ? `${m.sender_name}` : (m.sender ? `+${m.sender}` : "Them");
   }
   const meta = [sender, m.created_at ? fmtTime(m.created_at) : ""];
   if (m.neurons) meta.push(`${m.neurons.toFixed(1)} neurons`);
@@ -405,9 +411,10 @@ async function loadChats() {
     ...chats.map((c) => {
       const item = el("div", `chat-item${currentChat?.chat_id === c.chat_id ? " active" : ""}`);
       const name = c.name || c.chat_id.split("@")[0];
+      const phone = !c.is_group && c.chat_id.includes("@s.whatsapp.net") ? c.chat_id.split("@")[0] : "";
       item.append(
         el("div", "name", `${c.is_group ? "👥 " : ""}${name}${c.muted ? " 🔇" : ""}`),
-        el("div", "sub", `${c.message_count} messages · ${fmtTime(c.last_at)}`),
+        el("div", "sub", `${c.name && phone && phone !== c.name ? `+${phone} · ` : ""}${c.message_count} messages · ${fmtTime(c.last_at)}`),
       );
       item.addEventListener("click", () => openChat(c));
       return item;
@@ -417,7 +424,8 @@ async function loadChats() {
 
 async function openChat(c) {
   currentChat = c;
-  $("#conv-title").textContent = c.name || c.chat_id;
+  const phone = !c.is_group && c.chat_id.includes("@s.whatsapp.net") ? c.chat_id.split("@")[0] : "";
+  $("#conv-title").textContent = c.name && phone && phone !== c.name ? `${c.name} (+${phone})` : (c.name || c.chat_id);
   $("#conv-clear").classList.remove("hidden");
   $("#conv-mute").classList.toggle("hidden", c.chat_id === "dashboard");
   $("#conv-mute").textContent = c.muted ? "Unmute" : "Mute";
