@@ -88,7 +88,13 @@ async function start() {
       me = {
         pn: sock.user?.id ? jidNormalizedUser(sock.user.id) : null,
         lid: sock.user?.lid ? jidNormalizedUser(sock.user.lid) : null,
-        name: sock.user?.name ?? null,
+        name:
+          sock.user?.notify ||
+          sock.user?.name ||
+          sock.user?.verifiedName ||
+          sock.authState?.creds?.me?.name ||
+          sock.authState?.creds?.me?.notify ||
+          null,
       };
       log.info(`✅ Connected to WhatsApp as ${me.name ?? ""} (+${jidDecode(me.pn)?.user ?? "?"})`);
       await setState("open");
@@ -98,10 +104,11 @@ async function start() {
     if (connection === "close") {
       const code = lastDisconnect?.error?.output?.statusCode;
       if (code === DisconnectReason.loggedOut) {
-        log.warn("Logged out from WhatsApp. Clearing session — a new QR code will appear.");
-        await wipeSession(log);
-        await setState("logged_out");
-        scheduleRestart(2_000);
+        log.warn("Logged out reported from WhatsApp. Standing by; remote session kept safe unless reset from dashboard.");
+        // Protect saved session from being wiped unintentionally!
+        // Cloud session can only be permanently unlinked from the web dashboard.
+        await setState("logged_out", { detail: "WhatsApp session logged out. Reconnect or reset from dashboard." });
+        scheduleRestart(10_000);
       } else if (code === DisconnectReason.connectionReplaced) {
         // Another gateway instance took over the session — do NOT overwrite the active instance's "open" status in KV!
         log.warn("Connection replaced: another Lady Jane gateway instance is active. Standing by for 60s.");
@@ -115,6 +122,30 @@ async function start() {
         const delay = isFastRetry ? 1_000 : Math.min(5_000, 1_500 * Math.min(4, ++reconnectAttempts));
         log.warn(`Connection closed (code ${code ?? "unknown"}). Reconnecting in ${Math.round(delay / 1000)}s…`);
         scheduleRestart(delay);
+      }
+    }
+  });
+
+  sock.ev.on("contacts.upsert", (contacts) => {
+    for (const c of contacts) {
+      if (c && isMe(c.id)) {
+        const contactName = c.notify || c.name || c.verifiedName;
+        if (contactName && contactName !== me.name) {
+          me.name = contactName;
+          sendStatus();
+        }
+      }
+    }
+  });
+
+  sock.ev.on("contacts.update", (updates) => {
+    for (const c of updates) {
+      if (c && isMe(c.id)) {
+        const contactName = c.notify || c.name || c.verifiedName;
+        if (contactName && contactName !== me.name) {
+          me.name = contactName;
+          sendStatus();
+        }
       }
     }
   });
@@ -210,6 +241,10 @@ async function onMessage(msg) {
 
   const isGroup = !!isJidGroup(chatJid);
   const isSelfChat = !isGroup && (isMe(chatJid) || isMe(key.remoteJidAlt));
+  if (key.fromMe && msg.pushName && (!me.name || me.name !== msg.pushName)) {
+    me.name = msg.pushName;
+    sendStatus().catch(() => {});
+  }
   const ctx = contextInfoOf(msg.message);
   const mentioned = isGroup && (
     (ctx?.mentionedJid || []).some(isMe) ||

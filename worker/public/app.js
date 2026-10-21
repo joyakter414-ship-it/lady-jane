@@ -62,13 +62,16 @@ async function enterApp() {
   pollTimer = setInterval(() => {
     if (document.hidden) return;
     if (!$("#tab-home").classList.contains("hidden")) refreshOverview().catch(() => {});
-    if (!$("#tab-chats").classList.contains("hidden") && currentChat) {
-      api("GET", `/api/messages?chat=${encodeURIComponent(currentChat.chat_id)}`).then(({ messages }) => {
-        const log = $("#conv-log");
-        const wasAtBottom = log.scrollHeight - log.scrollTop <= log.clientHeight + 50;
-        log.replaceChildren(...messages.map(bubble));
-        if (wasAtBottom) log.scrollTop = log.scrollHeight;
-      }).catch(() => {});
+    if (!$("#tab-chats").classList.contains("hidden")) {
+      loadChats().catch(() => {});
+      if (currentChat) {
+        api("GET", `/api/messages?chat=${encodeURIComponent(currentChat.chat_id)}`).then(({ messages }) => {
+          const log = $("#conv-log");
+          const wasAtBottom = log.scrollHeight - log.scrollTop <= log.clientHeight + 50;
+          log.replaceChildren(...messages.map(bubble));
+          if (wasAtBottom) log.scrollTop = log.scrollHeight;
+        }).catch(() => {});
+      }
     }
   }, 4000);
 }
@@ -108,6 +111,7 @@ async function refreshOverview() {
   const isOpen = isOnline && gateway.state === "open";
   const isQr = isOnline && gateway.state === "qr" && Boolean(gateway.qr);
 
+  const displayName = gateway.me?.name || settings.ownerName || "";
   let [dot, label] = STATES[gateway.state] || ["off", gateway.state];
   if (!isOnline && gateway.state !== "never_connected") {
     [dot, label] = ["off", "Gateway offline (runner sleeping)"];
@@ -115,9 +119,20 @@ async function refreshOverview() {
   const status = $("#wa-status");
   status.replaceChildren(el("span", `dot ${dot}`), el("span", null, label));
   if (isOpen && gateway.me?.phone) {
-    status.append(el("span", "muted", ` as +${gateway.me.phone}${gateway.me.name ? ` (${gateway.me.name})` : ""}`));
+    status.append(el("span", "muted", ` as +${gateway.me.phone}${displayName ? ` (${displayName})` : ""}`));
   } else if (!isOnline && gateway.me?.phone) {
-    status.append(el("span", "muted", ` (last linked: +${gateway.me.phone}${gateway.me.name ? ` - ${gateway.me.name}` : ""})`));
+    status.append(el("span", "muted", ` (last linked: +${gateway.me.phone}${displayName ? ` - ${displayName}` : ""})`));
+  }
+
+  // Account details box
+  const accountBox = $("#wa-account-box");
+  if (accountBox) {
+    const hasPhone = Boolean(gateway.me?.phone);
+    accountBox.classList.toggle("hidden", !hasPhone);
+    if (hasPhone) {
+      if ($("#wa-account-phone")) $("#wa-account-phone").textContent = `+${gateway.me.phone}`;
+      if ($("#wa-account-name")) $("#wa-account-name").textContent = displayName || "WhatsApp User";
+    }
   }
 
   // QR Code display

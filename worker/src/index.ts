@@ -49,7 +49,11 @@ async function gatewayRoutes(request: Request, env: AppEnv, url: URL): Promise<R
       const next: GatewayStatus = {
         state: body.state,
         qr: body.state === "qr" ? body.qr ?? null : null,
-        me: body.me ?? prev?.me ?? null,
+        me: body.me ? {
+          id: body.me.id,
+          phone: body.me.phone,
+          name: body.me.name || prev?.me?.name || null,
+        } : prev?.me ?? null,
         detail: body.detail ?? null,
         at: Date.now(),
       };
@@ -121,10 +125,18 @@ async function dashboardRoutes(request: Request, env: AppEnv, url: URL): Promise
       ]);
       const today = new Date().toISOString().slice(0, 10);
       const online = !!gateway && Date.now() - gateway.at < GATEWAY_OFFLINE_AFTER_MS;
+      const enhancedGateway = gateway ? {
+        ...gateway,
+        online,
+        me: gateway.me ? {
+          ...gateway.me,
+          name: gateway.me.name || settings.ownerName || null,
+        } : null,
+      } : { state: "never_connected" as const, online: false };
       return json({
         settings,
         models: MODELS,
-        gateway: gateway ? { ...gateway, online } : { state: "never_connected", online: false },
+        gateway: enhancedGateway,
         usage: {
           freePerDay: FREE_NEURONS_PER_DAY,
           today: usage.results.find((u) => u.day === today) ?? { day: today, neurons: 0, requests: 0 },

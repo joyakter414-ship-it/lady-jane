@@ -44,6 +44,20 @@
             <button id="wa-wake-head" class="small ghost hidden">▶ Wake Runner</button>
           </div>
           <div id="wa-status" class="status"></div>
+          <div id="wa-account-box" class="account-info hidden" style="margin: 12px 0; padding: 12px 14px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px; font-size: 13px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <span class="muted">Connected Number:</span>
+              <strong id="wa-account-phone" style="color: var(--gold-2); font-family: monospace; font-size: 14px;"></strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+              <span class="muted">Account Name:</span>
+              <strong id="wa-account-name" style="color: var(--text);"></strong>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span class="muted">Session Protection:</span>
+              <span style="color: var(--green); font-weight: 500;">🔒 Active & Persistent (R2 + KV)</span>
+            </div>
+          </div>
           <div id="wa-qr" class="qr hidden">
             <img id="wa-qr-img" alt="WhatsApp QR code" />
             <p class="muted" style="margin-top: 8px;">
