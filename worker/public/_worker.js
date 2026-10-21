@@ -139,6 +139,7 @@ function getProvider(id) {
 // worker/src/settings.ts
 var DEFAULT_SETTINGS = {
   enabled: true,
+  instantReplyPaused: false,
   provider: "workers-ai",
   model: "@cf/meta/llama-4-scout-17b-16e-instruct",
   replyMode: "self",
@@ -198,6 +199,7 @@ function matchesTriggers(text, triggers) {
 }
 function shouldAnswer(s, m) {
   if (!s.enabled) return { ok: false, reason: "disabled" };
+  if (s.instantReplyPaused) return { ok: false, reason: "instant reply paused" };
   if (!m.text.trim()) return { ok: false, reason: "empty" };
   if (m.fromMe && !m.isSelfChat) return { ok: false, reason: "own outgoing message" };
   if (m.isGroup) {
@@ -213,28 +215,37 @@ function shouldAnswer(s, m) {
 }
 async function handleIncoming(env, m) {
   const s = await getSettings(env);
+  const isOutgoing = m.fromMe && !m.isSelfChat;
+  const chatName = m.chatName ?? (isOutgoing ? null : m.senderName ?? null);
+  const { muted } = await upsertChat(env, m.chatId, chatName, m.isGroup);
+  const msgId = `wa:${m.chatId}:${m.id}`;
+  const isNew = await insertMessage(env, {
+    id: msgId,
+    chat_id: m.chatId,
+    role: isOutgoing ? "assistant" : "user",
+    sender: isOutgoing ? s.ownerName || "You" : m.senderPhone ?? null,
+    sender_name: isOutgoing ? s.ownerName || "You" : m.senderName ?? null,
+    content: m.text,
+    source: isOutgoing ? "whatsapp-device" : "whatsapp",
+    created_at: m.timestamp ?? Date.now()
+  });
+  if (!isNew) return { action: "ignore", reason: "duplicate delivery" };
+  if (isOutgoing) {
+    return { action: "ignore", reason: "own outgoing message (synced to dashboard)" };
+  }
+  if (muted) return { action: "ignore", reason: "chat muted" };
+  if (!s.enabled) return { action: "ignore", reason: "assistant disabled" };
+  if (s.instantReplyPaused) {
+    return { action: "ignore", reason: "instant reply paused" };
+  }
   const verdict = shouldAnswer(s, m);
   if (!verdict.ok) return { action: "ignore", reason: verdict.reason };
-  const { muted } = await upsertChat(env, m.chatId, m.chatName ?? m.senderName ?? null, m.isGroup);
-  if (muted) return { action: "ignore", reason: "chat muted" };
   const command = m.text.trim().toLowerCase();
   if (command === "/help") return { action: "reply", reply: HELP_TEXT };
   if (command === "/reset" || command === "/new") {
     await env.DB.prepare("DELETE FROM messages WHERE chat_id = ?").bind(m.chatId).run();
     return { action: "reply", reply: "Our conversation is forgotten \u2014 a fresh page awaits. \u2728" };
   }
-  const msgId = `wa:${m.chatId}:${m.id}`;
-  const isNew = await insertMessage(env, {
-    id: msgId,
-    chat_id: m.chatId,
-    role: "user",
-    sender: m.senderPhone ?? null,
-    sender_name: m.senderName ?? null,
-    content: m.text,
-    source: "whatsapp",
-    created_at: m.timestamp ?? Date.now()
-  });
-  if (!isNew) return { action: "ignore", reason: "duplicate delivery" };
   const rules = await getEnabledRules(env);
   const instantMatch = rules.find((r) => r.type === "instant" && matchesTriggers(m.text, r.triggers));
   if (instantMatch) {
@@ -339,8 +350,9 @@ async function generateReply(env, s, rules, c) {
 
 // worker/src/index.ts
 var SESSION_KEY = "whatsapp/session.bin";
+var SESSION_KV_KEY = "whatsapp_session_b64";
 var FREE_NEURONS_PER_DAY = 1e4;
-var GATEWAY_OFFLINE_AFTER_MS = 9e4;
+var GATEWAY_OFFLINE_AFTER_MS = 18e4;
 var index_default = {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -379,16 +391,37 @@ async function gatewayRoutes(request, env, url) {
       return json({ ok: true, command: command?.cmd ?? null });
     }
     case "GET /gw/session": {
-      const obj = await env.BUCKET.get(SESSION_KEY);
-      if (!obj) return new Response(null, { status: 404 });
-      return new Response(obj.body, { headers: { "content-type": "application/octet-stream" } });
+      const obj = await env.BUCKET.get(SESSION_KEY).catch(() => null);
+      if (obj) {
+        return new Response(obj.body, { headers: { "content-type": "application/octet-stream" } });
+      }
+      const b64 = await kvGet(env, SESSION_KV_KEY).catch(() => null);
+      if (b64) {
+        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        return new Response(bytes, { headers: { "content-type": "application/octet-stream" } });
+      }
+      return new Response(null, { status: 404 });
     }
     case "PUT /gw/session": {
-      await env.BUCKET.put(SESSION_KEY, await request.arrayBuffer());
+      const buf = await request.arrayBuffer();
+      await env.BUCKET.put(SESSION_KEY, buf).catch(() => {
+      });
+      try {
+        let binary = "";
+        const bytes = new Uint8Array(buf);
+        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+        await kvSet(env, SESSION_KV_KEY, btoa(binary));
+      } catch {
+      }
       return json({ ok: true });
     }
     case "DELETE /gw/session": {
-      await env.BUCKET.delete(SESSION_KEY);
+      await Promise.all([
+        env.BUCKET.delete(SESSION_KEY).catch(() => {
+        }),
+        kvDelete(env, SESSION_KV_KEY).catch(() => {
+        })
+      ]);
       return json({ ok: true });
     }
   }
@@ -480,8 +513,12 @@ async function dashboardRoutes(request, env, url) {
     }
     case "POST /api/gateway/logout":
     case "POST /api/session/reset": {
-      await env.BUCKET.delete(SESSION_KEY).catch(() => {
-      });
+      await Promise.all([
+        env.BUCKET.delete(SESSION_KEY).catch(() => {
+        }),
+        kvDelete(env, SESSION_KV_KEY).catch(() => {
+        })
+      ]);
       await kvSet(env, "gateway", {
         state: "logged_out",
         qr: null,

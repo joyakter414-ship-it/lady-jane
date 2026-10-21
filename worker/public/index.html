@@ -67,7 +67,8 @@
         <div class="card">
           <h2>Quick switches</h2>
           <label class="switch"><input type="checkbox" id="quick-enabled" /> <span>Lady Jane answers on WhatsApp</span></label>
-          <p class="muted">Reply mode: <b id="quick-mode"></b></p>
+          <label class="switch" style="margin-top: 10px;"><input type="checkbox" id="quick-instant-pause" /> <span>Pause Instant Replies (Manual Chat Mode)</span></label>
+          <p class="muted" style="margin-top: 8px;">Reply mode: <b id="quick-mode"></b></p>
           <p class="muted">Model: <b id="quick-model"></b></p>
         </div>
       </div>
@@ -98,7 +99,8 @@
         <div class="card">
           <div class="chat-head">
             <h2 id="conv-title">Select a conversation</h2>
-            <div>
+            <div style="display: flex; gap: 8px; align-items: center;">
+              <button id="conv-instant-toggle" class="small ghost hidden"></button>
               <button id="conv-mute" class="ghost small hidden"></button>
               <button id="conv-clear" class="danger small hidden">Clear history</button>
             </div>
@@ -155,6 +157,7 @@
         <h2>Settings</h2>
 
         <label class="switch"><input type="checkbox" name="enabled" /> <span>Lady Jane answers on WhatsApp</span></label>
+        <label class="switch"><input type="checkbox" name="instantReplyPaused" /> <span>Pause Instant Replies (Lady Jane syncs all WhatsApp chats to dashboard but stays silent for manual chatting)</span></label>
 
         <label>Your name <span class="muted">(she serves you)</span>
           <input name="ownerName" placeholder="e.g. Akter" />

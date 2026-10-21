@@ -4,9 +4,10 @@ import { createRule, deleteRule, getRules, kvDelete, kvGet, kvSet, updateRule } 
 import { getSettings, MODELS, saveSettings, type Settings } from "./settings";
 
 const SESSION_KEY = "whatsapp/session.bin";
+const SESSION_KV_KEY = "whatsapp_session_b64";
 const FREE_NEURONS_PER_DAY = 10_000;
-/** Gateway sends a heartbeat every 30s; after this long without one it's shown offline. */
-const GATEWAY_OFFLINE_AFTER_MS = 90_000;
+/** Gateway sends a heartbeat every 25s; allow up to 3 minutes before marking offline. */
+const GATEWAY_OFFLINE_AFTER_MS = 180_000;
 
 interface GatewayStatus {
   state: "starting" | "connecting" | "qr" | "open" | "closed" | "logged_out";
@@ -59,17 +60,35 @@ async function gatewayRoutes(request: Request, env: AppEnv, url: URL): Promise<R
       return json({ ok: true, command: command?.cmd ?? null });
     }
     case "GET /gw/session": {
-      const obj = await env.BUCKET.get(SESSION_KEY);
-      if (!obj) return new Response(null, { status: 404 });
-      return new Response(obj.body, { headers: { "content-type": "application/octet-stream" } });
+      const obj = await env.BUCKET.get(SESSION_KEY).catch(() => null);
+      if (obj) {
+        return new Response(obj.body, { headers: { "content-type": "application/octet-stream" } });
+      }
+      const b64 = await kvGet<string>(env, SESSION_KV_KEY).catch(() => null);
+      if (b64) {
+        const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+        return new Response(bytes, { headers: { "content-type": "application/octet-stream" } });
+      }
+      return new Response(null, { status: 404 });
     }
     case "PUT /gw/session": {
-      // The gateway encrypts the session before upload; we only store the bytes.
-      await env.BUCKET.put(SESSION_KEY, await request.arrayBuffer());
+      const buf = await request.arrayBuffer();
+      // 1. Store encrypted session in Cloudflare R2
+      await env.BUCKET.put(SESSION_KEY, buf).catch(() => {});
+      // 2. Dual backup: also store in KV as base64 so session is NEVER lost across cold boots
+      try {
+        let binary = "";
+        const bytes = new Uint8Array(buf);
+        for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+        await kvSet(env, SESSION_KV_KEY, btoa(binary));
+      } catch {}
       return json({ ok: true });
     }
     case "DELETE /gw/session": {
-      await env.BUCKET.delete(SESSION_KEY);
+      await Promise.all([
+        env.BUCKET.delete(SESSION_KEY).catch(() => {}),
+        kvDelete(env, SESSION_KV_KEY).catch(() => {}),
+      ]);
       return json({ ok: true });
     }
   }
@@ -167,8 +186,11 @@ async function dashboardRoutes(request: Request, env: AppEnv, url: URL): Promise
     }
     case "POST /api/gateway/logout":
     case "POST /api/session/reset": {
-      // 1. Permanently delete WhatsApp session from R2 storage
-      await env.BUCKET.delete(SESSION_KEY).catch(() => {});
+      // 1. Permanently delete WhatsApp session from R2 storage and KV fallback
+      await Promise.all([
+        env.BUCKET.delete(SESSION_KEY).catch(() => {}),
+        kvDelete(env, SESSION_KV_KEY).catch(() => {}),
+      ]);
       // 2. Clear stored user identity in KV
       await kvSet(env, "gateway", {
         state: "logged_out",

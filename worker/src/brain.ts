@@ -40,6 +40,7 @@ function matchesTriggers(text: string, triggers: string): boolean {
 /** Decide whether Lady Jane should answer, without touching the DB or AI. */
 export function shouldAnswer(s: Settings, m: IncomingMessage): { ok: true } | { ok: false; reason: string } {
   if (!s.enabled) return { ok: false, reason: "disabled" };
+  if (s.instantReplyPaused) return { ok: false, reason: "instant reply paused" };
   if (!m.text.trim()) return { ok: false, reason: "empty" };
   if (m.fromMe && !m.isSelfChat) return { ok: false, reason: "own outgoing message" };
 
@@ -58,11 +59,46 @@ export function shouldAnswer(s: Settings, m: IncomingMessage): { ok: true } | { 
 
 export async function handleIncoming(env: AppEnv, m: IncomingMessage): Promise<Decision> {
   const s = await getSettings(env);
+
+  const isOutgoing = m.fromMe && !m.isSelfChat;
+  const chatName = m.chatName ?? (isOutgoing ? null : m.senderName ?? null);
+
+  // 1. ALWAYS track the chat in DB so Conversations list has 100% real-time sync
+  const { muted } = await upsertChat(env, m.chatId, chatName, m.isGroup);
+
+  // 2. ALWAYS insert the message in DB so Conversations tab displays ALL WhatsApp activity
+  // (both incoming received messages AND outgoing messages sent from other devices!)
+  const msgId = `wa:${m.chatId}:${m.id}`;
+  const isNew = await insertMessage(env, {
+    id: msgId,
+    chat_id: m.chatId,
+    role: isOutgoing ? "assistant" : "user",
+    sender: isOutgoing ? (s.ownerName || "You") : (m.senderPhone ?? null),
+    sender_name: isOutgoing ? (s.ownerName || "You") : (m.senderName ?? null),
+    content: m.text,
+    source: isOutgoing ? "whatsapp-device" : "whatsapp",
+    created_at: m.timestamp ?? Date.now(),
+  });
+  if (!isNew) return { action: "ignore", reason: "duplicate delivery" };
+
+  // If outgoing message sent from own phone / other device, do not trigger AI to answer self
+  if (isOutgoing) {
+    return { action: "ignore", reason: "own outgoing message (synced to dashboard)" };
+  }
+
+  // If chat is muted, don't reply
+  if (muted) return { action: "ignore", reason: "chat muted" };
+
+  // If master switch is OFF, don't reply
+  if (!s.enabled) return { action: "ignore", reason: "assistant disabled" };
+
+  // If Instant Reply is PAUSED (manual chat mode like Nayra), don't reply!
+  if (s.instantReplyPaused) {
+    return { action: "ignore", reason: "instant reply paused" };
+  }
+
   const verdict = shouldAnswer(s, m);
   if (!verdict.ok) return { action: "ignore", reason: verdict.reason };
-
-  const { muted } = await upsertChat(env, m.chatId, m.chatName ?? m.senderName ?? null, m.isGroup);
-  if (muted) return { action: "ignore", reason: "chat muted" };
 
   const command = m.text.trim().toLowerCase();
   if (command === "/help") return { action: "reply", reply: HELP_TEXT };
@@ -70,19 +106,6 @@ export async function handleIncoming(env: AppEnv, m: IncomingMessage): Promise<D
     await env.DB.prepare("DELETE FROM messages WHERE chat_id = ?").bind(m.chatId).run();
     return { action: "reply", reply: "Our conversation is forgotten — a fresh page awaits. ✨" };
   }
-
-  const msgId = `wa:${m.chatId}:${m.id}`;
-  const isNew = await insertMessage(env, {
-    id: msgId,
-    chat_id: m.chatId,
-    role: "user",
-    sender: m.senderPhone ?? null,
-    sender_name: m.senderName ?? null,
-    content: m.text,
-    source: "whatsapp",
-    created_at: m.timestamp ?? Date.now(),
-  });
-  if (!isNew) return { action: "ignore", reason: "duplicate delivery" };
 
   // Rule Book check: instant reply triggers (free, 0 Neurons)
   const rules = await getEnabledRules(env);

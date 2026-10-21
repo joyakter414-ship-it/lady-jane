@@ -32,7 +32,7 @@ const waLog = log.child({ module: "baileys" }, { level: process.env.BAILEYS_LOG_
 const MAX_MESSAGE_AGE_MS = 10 * 60_000;
 /** Safety valve against reply loops / floods: max replies per chat per minute. */
 const MAX_REPLIES_PER_MINUTE = 8;
-const HEARTBEAT_MS = 30_000;
+const HEARTBEAT_MS = 25_000;
 
 let sock = null;
 let state = "starting";
@@ -103,21 +103,25 @@ async function start() {
         await setState("logged_out");
         scheduleRestart(2_000);
       } else if (code === DisconnectReason.connectionReplaced) {
-        // Another gateway instance is using the same session. Don't fight it.
-        log.error("Connection replaced: another Lady Jane gateway is running with this session. Retrying in 2 min.");
-        await setState("closed", { detail: "Another gateway took over this session" });
-        scheduleRestart(120_000);
+        // Another gateway instance took over the session — do NOT overwrite the active instance's "open" status in KV!
+        log.warn("Connection replaced: another Lady Jane gateway instance is active. Standing by for 60s.");
+        scheduleRestart(60_000);
       } else {
-        const delay = code === DisconnectReason.restartRequired ? 0 : Math.min(60_000, 2_000 * 2 ** reconnectAttempts++);
+        const isFastRetry =
+          code === DisconnectReason.restartRequired ||
+          code === DisconnectReason.timedOut ||
+          code === 408 ||
+          code === 515;
+        const delay = isFastRetry ? 1_000 : Math.min(5_000, 1_500 * Math.min(4, ++reconnectAttempts));
         log.warn(`Connection closed (code ${code ?? "unknown"}). Reconnecting in ${Math.round(delay / 1000)}s…`);
-        await setState("closed", { detail: `Disconnected (code ${code ?? "unknown"}), reconnecting` });
         scheduleRestart(delay);
       }
     }
   });
 
   sock.ev.on("messages.upsert", ({ messages, type }) => {
-    if (type !== "notify") return;
+    // Process both 'notify' (incoming) and 'append' (outgoing from user phone / WhatsApp web)
+    if (type !== "notify" && type !== "append") return;
     for (const msg of messages) {
       onMessage(msg).catch((err) => log.error({ err: String(err), stack: err?.stack }, "Failed to handle message"));
     }
@@ -271,9 +275,8 @@ async function sendStatus(extra = {}) {
   }
 }
 
-// Re-send the latest QR with each heartbeat isn't needed (WhatsApp rotates it
-// and Baileys emits a new one), so heartbeats only carry state.
-setInterval(() => state !== "qr" && sendStatus(), HEARTBEAT_MS).unref();
+// Always send heartbeats every 25s (including while in "qr" state) so dashboard never drops offline
+setInterval(() => sendStatus(), HEARTBEAT_MS).unref();
 
 const port = Number(process.env.PORT || 8080);
 createServer((req, res) => {

@@ -60,7 +60,16 @@ async function enterApp() {
   $("#app").classList.remove("hidden");
   clearInterval(pollTimer);
   pollTimer = setInterval(() => {
-    if (!document.hidden && !$("#tab-home").classList.contains("hidden")) refreshOverview().catch(() => {});
+    if (document.hidden) return;
+    if (!$("#tab-home").classList.contains("hidden")) refreshOverview().catch(() => {});
+    if (!$("#tab-chats").classList.contains("hidden") && currentChat) {
+      api("GET", `/api/messages?chat=${encodeURIComponent(currentChat.chat_id)}`).then(({ messages }) => {
+        const log = $("#conv-log");
+        const wasAtBottom = log.scrollHeight - log.scrollTop <= log.clientHeight + 50;
+        log.replaceChildren(...messages.map(bubble));
+        if (wasAtBottom) log.scrollTop = log.scrollHeight;
+      }).catch(() => {});
+    }
   }, 4000);
 }
 
@@ -143,12 +152,18 @@ async function refreshOverview() {
   );
 
   $("#quick-enabled").checked = settings.enabled;
+  if ($("#quick-instant-pause")) $("#quick-instant-pause").checked = Boolean(settings.instantReplyPaused);
   $("#quick-mode").textContent = { self: "Only me", allowlist: "Me + chosen numbers", everyone: "Everyone" }[settings.replyMode];
   $("#quick-model").textContent = (models.find((m) => m.id === settings.model)?.label || settings.model).split(" — ")[0];
 }
 
 $("#quick-enabled").addEventListener("change", async (e) => {
   await api("PUT", "/api/settings", { enabled: e.target.checked });
+  refreshOverview();
+});
+
+$("#quick-instant-pause")?.addEventListener("change", async (e) => {
+  await api("PUT", "/api/settings", { instantReplyPaused: e.target.checked });
   refreshOverview();
 });
 
@@ -198,8 +213,15 @@ $("#wa-reset").addEventListener("click", async () => {
 // ─── Talk to her ─────────────────────────────────────────────────────────────
 
 function bubble(m) {
+  const isMe = m.role === "assistant";
   const b = el("div", `msg ${m.role}`, m.content);
-  const meta = [m.role === "user" ? m.sender_name || "Them" : "Lady Jane", m.created_at ? fmtTime(m.created_at) : ""];
+  let sender = "Them";
+  if (isMe) {
+    sender = m.source === "whatsapp-device" ? (overview?.settings?.ownerName || "You (Phone)") : "Lady Jane";
+  } else {
+    sender = m.sender_name || (m.sender ? `+${m.sender}` : "Them");
+  }
+  const meta = [sender, m.created_at ? fmtTime(m.created_at) : ""];
   if (m.neurons) meta.push(`${m.neurons.toFixed(1)} neurons`);
   b.append(el("span", "meta", meta.filter(Boolean).join(" · ")));
   return b;
@@ -268,6 +290,20 @@ async function openChat(c) {
   $("#conv-clear").classList.remove("hidden");
   $("#conv-mute").classList.toggle("hidden", c.chat_id === "dashboard");
   $("#conv-mute").textContent = c.muted ? "Unmute" : "Mute";
+
+  const toggleBtn = $("#conv-instant-toggle");
+  if (toggleBtn) {
+    toggleBtn.classList.remove("hidden");
+    const isPaused = Boolean(overview?.settings?.instantReplyPaused);
+    toggleBtn.textContent = isPaused ? "▶ Resume Instant Replies" : "⏸ Pause Instant Replies";
+    toggleBtn.style.color = isPaused ? "var(--green)" : "var(--gold-2)";
+    toggleBtn.onclick = async () => {
+      await api("PUT", "/api/settings", { instantReplyPaused: !isPaused });
+      await refreshOverview();
+      openChat(c);
+    };
+  }
+
   const { messages } = await api("GET", `/api/messages?chat=${encodeURIComponent(c.chat_id)}`);
   const log = $("#conv-log");
   log.replaceChildren(...messages.map(bubble));
@@ -404,6 +440,7 @@ async function fillSettings() {
   const f = $("#settings-form");
   $("#model-select").replaceChildren(...models.map((m) => Object.assign(el("option", null, m.label), { value: m.id })));
   f.enabled.checked = s.enabled;
+  if (f.instantReplyPaused) f.instantReplyPaused.checked = Boolean(s.instantReplyPaused);
   f.ownerName.value = s.ownerName;
   f.replyMode.value = s.replyMode;
   f.allowlist.value = s.allowlist.join("\n");
@@ -426,6 +463,7 @@ $("#settings-form").addEventListener("submit", async (e) => {
   try {
     const { settings } = await api("PUT", "/api/settings", {
       enabled: f.enabled.checked,
+      instantReplyPaused: f.instantReplyPaused ? f.instantReplyPaused.checked : false,
       ownerName: f.ownerName.value,
       replyMode: f.replyMode.value,
       allowlist: f.allowlist.value.split(/[\n,]/).map((x) => x.trim()).filter(Boolean),

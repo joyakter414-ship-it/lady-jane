@@ -6,6 +6,11 @@ export type ReplyMode = "self" | "allowlist" | "everyone";
 export interface Settings {
   /** Master switch. When off, Lady Jane stays silent on WhatsApp (dashboard chat still works). */
   enabled: boolean;
+  /**
+   * When true, Lady Jane does NOT send instant replies to incoming WhatsApp messages
+   * (allowing human team members to chat manually), while keeping live 2-way conversation sync active.
+   */
+  instantReplyPaused: boolean;
   /** AI provider id — only "workers-ai" for now; Claude etc. plug in later via providers/. */
   provider: string;
   model: string;
@@ -30,6 +35,7 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   enabled: true,
+  instantReplyPaused: false,
   provider: "workers-ai",
   model: "@cf/meta/llama-4-scout-17b-16e-instruct",
   replyMode: "self",
