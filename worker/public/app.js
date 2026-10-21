@@ -110,8 +110,43 @@ async function refreshOverview() {
   const isOnline = Boolean(gateway.online);
   const isOpen = isOnline && gateway.state === "open";
   const isQr = isOnline && gateway.state === "qr" && Boolean(gateway.qr);
+  const isPaused = Boolean(settings.instantReplyPaused);
 
   const displayName = gateway.me?.name || settings.ownerName || "";
+  const phone = gateway.me?.phone;
+  const fullAccountLabel = phone ? `+${phone}${displayName ? ` (${displayName})` : ""}` : "";
+
+  // Topbar Status & Account Pill
+  const topbarAccountPill = $("#topbar-account-pill");
+  const topbarAccountText = $("#topbar-account-text");
+  if (topbarAccountPill && topbarAccountText) {
+    if (phone) {
+      topbarAccountPill.classList.remove("hidden");
+      topbarAccountText.textContent = fullAccountLabel;
+    } else {
+      topbarAccountPill.classList.add("hidden");
+    }
+  }
+
+  const topbarInstantPill = $("#topbar-instant-pill");
+  const topbarInstantText = $("#topbar-instant-text");
+  if (topbarInstantPill && topbarInstantText) {
+    if (isPaused) {
+      topbarInstantPill.style.background = "rgba(234, 179, 8, 0.15)";
+      topbarInstantPill.style.border = "1px solid rgba(234, 179, 8, 0.45)";
+      topbarInstantPill.style.color = "#facc15";
+      topbarInstantText.textContent = "⏸ Instant Reply: OFF";
+      topbarInstantPill.title = "Currently instant reply is OFF (No AI replies). Click to turn ON.";
+    } else {
+      topbarInstantPill.style.background = "rgba(62, 207, 142, 0.15)";
+      topbarInstantPill.style.border = "1px solid rgba(62, 207, 142, 0.45)";
+      topbarInstantPill.style.color = "#3ecf8e";
+      topbarInstantText.textContent = "⚡ Instant Reply: ON";
+      topbarInstantPill.title = "Currently instant reply is ON (Automatic replies). Click to turn OFF.";
+    }
+    topbarInstantPill.onclick = toggleInstantReply;
+  }
+
   let [dot, label] = STATES[gateway.state] || ["off", gateway.state];
   if (!isOnline && gateway.state !== "never_connected") {
     [dot, label] = ["off", "Gateway offline (runner sleeping)"];
@@ -133,6 +168,60 @@ async function refreshOverview() {
       if ($("#wa-account-phone")) $("#wa-account-phone").textContent = `+${gateway.me.phone}`;
       if ($("#wa-account-name")) $("#wa-account-name").textContent = displayName || "WhatsApp User";
     }
+  }
+
+  // Instant Reply Status Banner in WhatsApp Card
+  const banner = $("#instant-reply-banner");
+  const bannerText = $("#instant-reply-banner-text");
+  const bannerBtn = $("#instant-reply-banner-btn");
+  if (banner && bannerText && bannerBtn) {
+    if (isPaused) {
+      banner.style.background = "rgba(234, 179, 8, 0.12)";
+      banner.style.border = "1px solid rgba(234, 179, 8, 0.4)";
+      banner.style.color = "#facc15";
+      bannerText.innerHTML = `<div><strong>⏸ Currently instant reply OFF — no reply from AI</strong><div style="font-size: 12px; margin-top: 3px; color: var(--muted);">Incoming messages are safely saved to Conversations. You can chat manually without AI interfering.</div></div>`;
+      bannerBtn.textContent = "▶ Turn ON Instant Reply";
+      bannerBtn.style.background = "var(--green)";
+      bannerBtn.style.color = "#0b1a13";
+      bannerBtn.style.border = "none";
+    } else {
+      banner.style.background = "rgba(62, 207, 142, 0.12)";
+      banner.style.border = "1px solid rgba(62, 207, 142, 0.4)";
+      banner.style.color = "#3ecf8e";
+      bannerText.innerHTML = `<div><strong>⚡ Instant Reply is ON — AI answers immediately</strong><div style="font-size: 12px; margin-top: 3px; color: var(--muted);">Lady Jane will automatically reply to incoming WhatsApp messages using your AI persona.</div></div>`;
+      bannerBtn.textContent = "⏸ Turn OFF Instant Reply";
+      bannerBtn.style.background = "rgba(234, 179, 8, 0.25)";
+      bannerBtn.style.color = "#facc15";
+      bannerBtn.style.border = "1px solid rgba(234, 179, 8, 0.5)";
+    }
+    bannerBtn.onclick = toggleInstantReply;
+  }
+
+  // Conversations Tab Top Strip
+  const convStrip = $("#conv-instant-strip");
+  const convStripText = $("#conv-instant-strip-text");
+  const convStripBtn = $("#conv-instant-strip-btn");
+  if (convStrip && convStripText && convStripBtn) {
+    if (isPaused) {
+      convStrip.style.background = "rgba(234, 179, 8, 0.12)";
+      convStrip.style.border = "1px solid rgba(234, 179, 8, 0.4)";
+      convStrip.style.color = "#facc15";
+      convStripText.innerHTML = `<div><strong>⏸ Currently instant reply OFF — no reply from AI</strong> (Manual Team Mode). Messages are live-synced below; type in the box to send replies directly to WhatsApp.</div>`;
+      convStripBtn.textContent = "▶ Turn ON Instant Reply";
+      convStripBtn.style.background = "var(--green)";
+      convStripBtn.style.color = "#0b1a13";
+      convStripBtn.style.border = "none";
+    } else {
+      convStrip.style.background = "rgba(62, 207, 142, 0.12)";
+      convStrip.style.border = "1px solid rgba(62, 207, 142, 0.4)";
+      convStrip.style.color = "#3ecf8e";
+      convStripText.innerHTML = `<div><strong>⚡ Instant Reply is ON</strong> — Lady Jane is actively answering WhatsApp messages automatically.</div>`;
+      convStripBtn.textContent = "⏸ Turn OFF Instant Reply";
+      convStripBtn.style.background = "rgba(234, 179, 8, 0.25)";
+      convStripBtn.style.color = "#facc15";
+      convStripBtn.style.border = "1px solid rgba(234, 179, 8, 0.5)";
+    }
+    convStripBtn.onclick = toggleInstantReply;
   }
 
   // QR Code display
@@ -167,9 +256,35 @@ async function refreshOverview() {
   );
 
   $("#quick-enabled").checked = settings.enabled;
-  if ($("#quick-instant-pause")) $("#quick-instant-pause").checked = Boolean(settings.instantReplyPaused);
+
+  // Quick switch toggle
+  const quickInstantToggle = $("#quick-instant-toggle");
+  const quickInstantLabel = $("#quick-instant-label");
+  const quickInstantDesc = $("#quick-instant-desc");
+  if (quickInstantToggle && quickInstantLabel && quickInstantDesc) {
+    quickInstantToggle.checked = !isPaused; // Checked means ON
+    if (isPaused) {
+      quickInstantLabel.textContent = "Instant AI Replies: OFF";
+      quickInstantLabel.style.color = "#facc15";
+      quickInstantDesc.textContent = "⚠️ Currently instant reply OFF — no reply from AI (manual mode active).";
+      quickInstantDesc.style.color = "#facc15";
+    } else {
+      quickInstantLabel.textContent = "Instant AI Replies: ON";
+      quickInstantLabel.style.color = "var(--green)";
+      quickInstantDesc.textContent = "🟢 Currently instant reply ON — AI answers incoming messages immediately.";
+      quickInstantDesc.style.color = "var(--green)";
+    }
+  }
+
   $("#quick-mode").textContent = { self: "Only me", allowlist: "Me + chosen numbers", everyone: "Everyone" }[settings.replyMode];
   $("#quick-model").textContent = (models.find((m) => m.id === settings.model)?.label || settings.model).split(" — ")[0];
+}
+
+async function toggleInstantReply() {
+  const currentPaused = Boolean(overview?.settings?.instantReplyPaused);
+  await api("PUT", "/api/settings", { instantReplyPaused: !currentPaused });
+  await refreshOverview();
+  if (currentChat) openChat(currentChat);
 }
 
 $("#quick-enabled").addEventListener("change", async (e) => {
@@ -177,9 +292,10 @@ $("#quick-enabled").addEventListener("change", async (e) => {
   refreshOverview();
 });
 
-$("#quick-instant-pause")?.addEventListener("change", async (e) => {
-  await api("PUT", "/api/settings", { instantReplyPaused: e.target.checked });
-  refreshOverview();
+$("#quick-instant-toggle")?.addEventListener("change", async (e) => {
+  await api("PUT", "/api/settings", { instantReplyPaused: !e.target.checked });
+  await refreshOverview();
+  if (currentChat) openChat(currentChat);
 });
 
 async function wakeGateway() {
@@ -310,8 +426,8 @@ async function openChat(c) {
   if (toggleBtn) {
     toggleBtn.classList.remove("hidden");
     const isPaused = Boolean(overview?.settings?.instantReplyPaused);
-    toggleBtn.textContent = isPaused ? "▶ Resume Instant Replies" : "⏸ Pause Instant Replies";
-    toggleBtn.style.color = isPaused ? "var(--green)" : "var(--gold-2)";
+    toggleBtn.textContent = isPaused ? "▶ Turn ON Instant Reply" : "⏸ Turn OFF Instant Reply";
+    toggleBtn.style.color = isPaused ? "var(--green)" : "#facc15";
     toggleBtn.onclick = async () => {
       await api("PUT", "/api/settings", { instantReplyPaused: !isPaused });
       await refreshOverview();

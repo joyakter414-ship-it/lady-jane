@@ -32,6 +32,15 @@
         <button data-tab="rules" class="tab">Rule Book 📜</button>
         <button data-tab="settings" class="tab">Settings</button>
       </nav>
+      <div id="topbar-status-strip" style="display: flex; align-items: center; gap: 8px; margin-left: auto;">
+        <div id="topbar-account-pill" class="small-text hidden" style="display: flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 99px; background: var(--panel-2); border: 1px solid var(--line);">
+          <span class="dot on" style="width: 8px; height: 8px;"></span>
+          <span id="topbar-account-text" style="color: var(--gold-2); font-weight: 600;"></span>
+        </div>
+        <div id="topbar-instant-pill" class="small-text" style="display: flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 99px; font-weight: 600; cursor: pointer;">
+          <span id="topbar-instant-text"></span>
+        </div>
+      </div>
       <button id="logout" class="ghost small">Sign out</button>
     </header>
 
@@ -58,6 +67,10 @@
               <span style="color: var(--green); font-weight: 500;">🔒 Active & Persistent (R2 + KV)</span>
             </div>
           </div>
+          <div id="instant-reply-banner" style="margin: 12px 0; padding: 12px 14px; border-radius: 10px; font-size: 13px; font-weight: 500; display: flex; align-items: center; justify-content: space-between; gap: 10px;">
+            <div id="instant-reply-banner-text"></div>
+            <button id="instant-reply-banner-btn" class="small" type="button" style="white-space: nowrap;"></button>
+          </div>
           <div id="wa-qr" class="qr hidden">
             <img id="wa-qr-img" alt="WhatsApp QR code" />
             <p class="muted" style="margin-top: 8px;">
@@ -81,8 +94,11 @@
         <div class="card">
           <h2>Quick switches</h2>
           <label class="switch"><input type="checkbox" id="quick-enabled" /> <span>Lady Jane answers on WhatsApp</span></label>
-          <label class="switch" style="margin-top: 10px;"><input type="checkbox" id="quick-instant-pause" /> <span>Pause Instant Replies (Manual Chat Mode)</span></label>
-          <p class="muted" style="margin-top: 8px;">Reply mode: <b id="quick-mode"></b></p>
+          <div style="margin-top: 12px; padding: 12px 14px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;">
+            <label class="switch" style="margin: 0;"><input type="checkbox" id="quick-instant-toggle" /> <span id="quick-instant-label" style="font-weight: 600;"></span></label>
+            <div id="quick-instant-desc" style="font-size: 12px; margin-top: 6px; font-weight: 500;"></div>
+          </div>
+          <p class="muted" style="margin-top: 12px;">Reply mode: <b id="quick-mode"></b></p>
           <p class="muted">Model: <b id="quick-model"></b></p>
         </div>
       </div>
@@ -105,6 +121,10 @@
 
     <!-- Conversations -->
     <section id="tab-chats" class="page hidden">
+      <div id="conv-instant-strip" style="margin-bottom: 14px; padding: 12px 16px; border-radius: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; font-weight: 500;">
+        <div id="conv-instant-strip-text"></div>
+        <button id="conv-instant-strip-btn" class="small" type="button" style="white-space: nowrap;"></button>
+      </div>
       <div class="split">
         <div class="card list-card">
           <h2>Conversations</h2>
