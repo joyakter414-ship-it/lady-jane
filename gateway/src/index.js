@@ -423,8 +423,19 @@ async function onMessage(msg) {
   const sentAt = Number(msg.messageTimestamp || 0) * 1000;
   if (sentAt && Date.now() - sentAt > MAX_MESSAGE_AGE_MS) return;
 
-  const isGroup = !!isJidGroup(chatJid);
-  const isSelfChat = !isGroup && (isMe(chatJid) || isMe(key.remoteJidAlt));
+  const isOutgoing = Boolean(key.fromMe);
+  const rawChatJid = jidNormalizedUser(chatJid);
+  const isGroup = !!isJidGroup(rawChatJid);
+  const canonicalChatId = isGroup ? rawChatJid : resolveCanonicalChatId(rawChatJid, key.remoteJidAlt);
+  const isSelfChat = !isGroup && (isMe(rawChatJid) || isMe(canonicalChatId) || isMe(key.remoteJidAlt));
+
+  if (!isGroup) {
+    if (rawChatJid.endsWith("@lid") && key.remoteJidAlt && isPnUser(key.remoteJidAlt)) {
+      mapLidPn(rawChatJid, key.remoteJidAlt);
+    } else if (isPnUser(rawChatJid) && key.remoteJidAlt && key.remoteJidAlt.endsWith("@lid")) {
+      mapLidPn(key.remoteJidAlt, rawChatJid);
+    }
+  }
 
   // 1. Check for protocol revoke / unsend ("Delete for Everyone"):
   const mContent = normalizeMessageContent(msg.message);
@@ -439,15 +450,18 @@ async function onMessage(msg) {
     const targetChat = protocolMsg.key?.remoteJid || chatJid;
     const targetFromMe = Boolean(protocolMsg.key?.fromMe);
     if (targetId) {
-      log.info({ targetId, targetChat, targetFromMe }, "⚠️ Protocol unsend/revoke detected! Preserving original message in DB with deleted tag.");
+      const canonicalTargetChat = isJidGroup(targetChat)
+        ? jidNormalizedUser(targetChat)
+        : resolveCanonicalChatId(jidNormalizedUser(targetChat), protocolMsg.key?.remoteJidAlt);
+      log.info({ targetId, targetChat, targetFromMe, canonicalTargetChat }, "⚠️ Protocol unsend/revoke detected! Preserving original message in DB with deleted tag.");
       await brain("POST", "/gw/message", {
         json: {
           id: key.id,
-          chatId: jidNormalizedUser(targetChat),
+          chatId: canonicalTargetChat,
           isGroup: isJidGroup(targetChat),
           isSelfChat: !isJidGroup(targetChat) && (isMe(targetChat) || isMe(key.remoteJidAlt)),
           fromMe: targetFromMe,
-          senderPhone: isJidGroup(targetChat) ? phoneOf(key.participant, key.participantAlt) : phoneOf(targetChat, key.remoteJidAlt),
+          senderPhone: isJidGroup(targetChat) ? phoneOf(key.participant, key.participantAlt) : phoneOf(canonicalTargetChat, targetChat, key.remoteJidAlt),
           senderName: targetFromMe ? me.name : msg.pushName || null,
           text: "[Message deleted]",
           isRevoke: true,
@@ -496,20 +510,6 @@ async function onMessage(msg) {
     text = mediaInfo.caption || `[${mediaInfo.type.toUpperCase()}]`;
   }
   if (!text && !mediaInfo) return;
-
-  const isOutgoing = Boolean(key.fromMe);
-  const rawChatJid = jidNormalizedUser(chatJid);
-  const isGroup = !!isJidGroup(rawChatJid);
-  const canonicalChatId = isGroup ? rawChatJid : resolveCanonicalChatId(rawChatJid, key.remoteJidAlt);
-  const isSelfChat = !isGroup && (isMe(rawChatJid) || isMe(canonicalChatId) || isMe(key.remoteJidAlt));
-
-  if (!isGroup) {
-    if (rawChatJid.endsWith("@lid") && key.remoteJidAlt && isPnUser(key.remoteJidAlt)) {
-      mapLidPn(rawChatJid, key.remoteJidAlt);
-    } else if (isPnUser(rawChatJid) && key.remoteJidAlt && key.remoteJidAlt.endsWith("@lid")) {
-      mapLidPn(key.remoteJidAlt, rawChatJid);
-    }
-  }
 
   // If incoming message from contact, record sender's WhatsApp username (pushName):
   if (!isOutgoing && msg.pushName) {
