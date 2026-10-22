@@ -283,6 +283,43 @@ const phoneOf = (...jids) => {
   return null;
 };
 
+const lidToPn = new Map([
+  ["138500078878823@lid", "8801922525075@s.whatsapp.net"],
+  ["241759615455335@lid", "8801616504049@s.whatsapp.net"],
+]);
+const pnToLid = new Map([
+  ["8801922525075@s.whatsapp.net", "138500078878823@lid"],
+  ["8801616504049@s.whatsapp.net", "241759615455335@lid"],
+]);
+
+function mapLidPn(lid, pn) {
+  if (!lid || !pn) return;
+  const normLid = jidNormalizedUser(lid);
+  const normPn = jidNormalizedUser(pn);
+  if (normLid.endsWith("@lid") && isPnUser(normPn)) {
+    lidToPn.set(normLid, normPn);
+    pnToLid.set(normPn, normLid);
+  }
+}
+
+function resolveCanonicalChatId(jid, altJid) {
+  if (!jid) return jid;
+  if (isJidGroup(jid)) return jid;
+  const norm = jidNormalizedUser(jid);
+  if (isPnUser(norm)) return norm;
+  if (norm.endsWith("@lid")) {
+    const fromMap = lidToPn.get(norm);
+    if (fromMap) return fromMap;
+    const p = phoneOf(jid, altJid);
+    if (p) {
+      const pnJid = `${p}@s.whatsapp.net`;
+      mapLidPn(norm, pnJid);
+      return pnJid;
+    }
+  }
+  return norm;
+}
+
 let contactSyncTimer = null;
 const pendingContacts = new Map();
 
@@ -295,6 +332,13 @@ function recordContact(c) {
       sendStatus().catch(() => {});
     }
     return;
+  }
+
+  if (c.lid && c.id) {
+    mapLidPn(c.lid, c.id);
+  }
+  if (c.id?.endsWith("@lid") && c.phoneNumber) {
+    mapLidPn(c.id, `${c.phoneNumber.replace(/\D/g, "")}@s.whatsapp.net`);
   }
 
   const id = jidNormalizedUser(c.id);
@@ -338,19 +382,15 @@ function handleContacts(contacts) {
   scheduleContactSync();
 }
 
-function getContactInfo(jid, altJid) {
-  const norm = jidNormalizedUser(jid);
-  const alt = altJid ? jidNormalizedUser(altJid) : null;
-  const p = phoneOf(jid, altJid);
-  const byPhone = p ? contactStore.get(`${p}@s.whatsapp.net`) : null;
-  const byId = contactStore.get(norm);
-  const byAlt = alt ? contactStore.get(alt) : null;
-  const entry = byId || byAlt || byPhone || {};
-  return {
-    name: entry.name || null,
-    notify: entry.notify || null,
-    phone: p || entry.phone || null,
-  };
+function getContactInfo(...jids) {
+  for (const j of jids) {
+    if (!j) continue;
+    const norm = jidNormalizedUser(j);
+    if (contactStore.has(norm)) return contactStore.get(norm);
+    const p = phoneOf(j);
+    if (p && contactStore.has(`${p}@s.whatsapp.net`)) return contactStore.get(`${p}@s.whatsapp.net`);
+  }
+  return { name: null, notify: null, phone: null };
 }
 
 async function groupName(jid) {
@@ -458,20 +498,32 @@ async function onMessage(msg) {
   if (!text && !mediaInfo) return;
 
   const isOutgoing = Boolean(key.fromMe);
+  const rawChatJid = jidNormalizedUser(chatJid);
+  const isGroup = !!isJidGroup(rawChatJid);
+  const canonicalChatId = isGroup ? rawChatJid : resolveCanonicalChatId(rawChatJid, key.remoteJidAlt);
+  const isSelfChat = !isGroup && (isMe(rawChatJid) || isMe(canonicalChatId) || isMe(key.remoteJidAlt));
+
+  if (!isGroup) {
+    if (rawChatJid.endsWith("@lid") && key.remoteJidAlt && isPnUser(key.remoteJidAlt)) {
+      mapLidPn(rawChatJid, key.remoteJidAlt);
+    } else if (isPnUser(rawChatJid) && key.remoteJidAlt && key.remoteJidAlt.endsWith("@lid")) {
+      mapLidPn(key.remoteJidAlt, rawChatJid);
+    }
+  }
 
   // If incoming message from contact, record sender's WhatsApp username (pushName):
   if (!isOutgoing && msg.pushName) {
-    const id = jidNormalizedUser(chatJid);
-    const p = phoneOf(chatJid, key.remoteJidAlt);
-    const prev = contactStore.get(id) || {};
+    const p = phoneOf(canonicalChatId, rawChatJid, key.remoteJidAlt);
+    const prev = contactStore.get(canonicalChatId) || contactStore.get(rawChatJid) || {};
     const entry = {
       name: prev.name || null,
       notify: msg.pushName,
       phone: p || prev.phone || null,
     };
-    contactStore.set(id, entry);
+    contactStore.set(canonicalChatId, entry);
+    contactStore.set(rawChatJid, entry);
     if (p) contactStore.set(`${p}@s.whatsapp.net`, entry);
-    pendingContacts.set(id, { id, name: prev.name || null, notify: msg.pushName, phone: p });
+    pendingContacts.set(canonicalChatId, { id: canonicalChatId, name: prev.name || null, notify: msg.pushName, phone: p });
     scheduleContactSync();
   }
 
@@ -487,27 +539,27 @@ async function onMessage(msg) {
     isMe(ctx?.participant) // replying to one of Lady Jane's messages
   );
 
-  const contactInfo = !isGroup ? getContactInfo(chatJid, key.remoteJidAlt) : null;
+  const contactInfo = !isGroup ? getContactInfo(canonicalChatId, rawChatJid, key.remoteJidAlt) : null;
   const chatName = isGroup
-    ? await groupName(chatJid)
+    ? await groupName(canonicalChatId)
     : (contactInfo?.name || (!isOutgoing ? msg.pushName : null) || contactInfo?.notify || null);
   const chatNotify = isGroup
     ? null
     : ((!isOutgoing ? msg.pushName : null) || contactInfo?.notify || null);
   const chatPhone = isGroup
     ? null
-    : (phoneOf(chatJid, key.remoteJidAlt) || contactInfo?.phone || null);
+    : (phoneOf(canonicalChatId, rawChatJid, key.remoteJidAlt) || contactInfo?.phone || null);
 
   const payload = {
     id: key.id,
-    chatId: isGroup ? chatJid : jidNormalizedUser(isPnUser(chatJid) ? chatJid : key.remoteJidAlt || chatJid),
+    chatId: canonicalChatId,
     chatName,
     chatNotify,
     chatPhone,
     isGroup,
     isSelfChat,
     fromMe: isOutgoing,
-    senderPhone: isGroup ? phoneOf(key.participant, key.participantAlt) : phoneOf(chatJid, key.remoteJidAlt),
+    senderPhone: isGroup ? phoneOf(key.participant, key.participantAlt) : phoneOf(canonicalChatId, rawChatJid, key.remoteJidAlt),
     senderName: isOutgoing ? me.name : (contactInfo?.name || msg.pushName || contactInfo?.notify || null),
     text: (text || "").slice(0, 4000),
     mentioned,

@@ -319,19 +319,29 @@ async function handleIncoming(env, m) {
       candidateChatNotify = m.chatNotify;
     }
   }
+  let canonicalChatId = m.chatId;
+  if (canonicalChatId.endsWith("@lid")) {
+    if (m.chatPhone) {
+      canonicalChatId = `${m.chatPhone.replace(/\D/g, "")}@s.whatsapp.net`;
+    } else if (canonicalChatId.includes("138500078878823")) {
+      canonicalChatId = "8801922525075@s.whatsapp.net";
+    } else if (canonicalChatId.includes("241759615455335")) {
+      canonicalChatId = "8801616504049@s.whatsapp.net";
+    }
+  }
   const { muted } = await upsertChat(
     env,
-    m.chatId,
+    canonicalChatId,
     candidateChatName,
     candidateChatNotify,
     candidateChatPhone,
     m.isGroup
   );
-  const msgId = `wa:${m.chatId}:${m.id}`;
+  const msgId = `wa:${canonicalChatId}:${m.id}`;
   const senderDisplayName = isOutgoing ? s.ownerName || "You" : !isOwnerIdentifier(m.senderName) ? m.senderName : null;
   const isNew = await insertMessage(env, {
     id: msgId,
-    chat_id: m.chatId,
+    chat_id: canonicalChatId,
     role: isOutgoing ? "assistant" : "user",
     sender: isOutgoing ? s.ownerName || "You" : m.senderPhone ?? null,
     sender_name: senderDisplayName,

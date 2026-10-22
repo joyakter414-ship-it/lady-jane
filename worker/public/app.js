@@ -496,10 +496,13 @@ $("#chat-reset").addEventListener("click", async () => {
 function formatChatMeta(c) {
   if (c.chat_id === "dashboard") {
     return {
-      title: "Dashboard",
+      titleHtml: "Dashboard 👑",
       sub: "AI test sandbox",
-      header: "Dashboard 👑",
+      headerHtml: "Dashboard 👑",
+      subHeaderHtml: "Test Lady Jane's AI personality directly in this sandbox",
       primaryName: "Dashboard",
+      phone: "",
+      whatsappId: "dashboard",
     };
   }
 
@@ -519,46 +522,62 @@ function formatChatMeta(c) {
   const whatsappName = !isInvalid(c.notify_name) ? c.notify_name.trim() : null;
   const phone = c.phone || (!c.is_group && c.chat_id.includes("@s.whatsapp.net") ? c.chat_id.split("@")[0] : "");
   const formattedPhone = phone ? (phone.startsWith("+") ? phone : `+${phone}`) : "";
+  const whatsappId = c.chat_id;
 
   if (c.is_group) {
     const title = `👥 ${c.name || "WhatsApp Group"}`;
     return {
-      title,
+      titleHtml: title,
       sub: `${c.message_count} messages · ${fmtTime(c.last_at)}`,
-      header: title,
+      headerHtml: title,
+      subHeaderHtml: `Group conversation • ID: ${whatsappId}`,
       primaryName: c.name || "WhatsApp Group",
+      phone: "",
+      whatsappId,
     };
   }
 
   // 1-on-1 Contact chat:
-  // Shows: name set in other device, whatsapp username, number
-  let mainName = "";
+  // Shows: name set in other device, whatsapp username, number, whatsapp unique id
+  let titleHtml = "";
+  let headerHtml = "";
+
   if (deviceName && whatsappName && deviceName.toLowerCase() !== whatsappName.toLowerCase()) {
-    mainName = `${deviceName} (~${whatsappName})`;
+    titleHtml = `${deviceName} <span style="font-size: 13px; font-weight: normal; opacity: 0.82;">(~${whatsappName})</span>`;
+    headerHtml = `${deviceName} <span style="font-size: 14px; font-weight: normal; opacity: 0.85;">(~${whatsappName})</span>`;
   } else if (deviceName) {
-    mainName = deviceName;
+    titleHtml = deviceName;
+    headerHtml = deviceName;
   } else if (whatsappName) {
-    mainName = `~${whatsappName}`;
+    titleHtml = `~${whatsappName}`;
+    headerHtml = `~${whatsappName}`;
   } else {
-    mainName = formattedPhone || c.chat_id;
+    titleHtml = formattedPhone || whatsappId;
+    headerHtml = formattedPhone || whatsappId;
   }
 
   const subLine = [
-    formattedPhone && mainName !== formattedPhone ? formattedPhone : "",
+    formattedPhone && titleHtml !== formattedPhone ? formattedPhone : "",
     `${c.message_count} messages`,
     fmtTime(c.last_at),
   ].filter(Boolean).join(" · ");
 
-  let headerText = mainName;
-  if (formattedPhone && !headerText.includes(formattedPhone)) {
-    headerText = `${mainName} (${formattedPhone})`;
+  const subHeaderParts = [];
+  if (formattedPhone) subHeaderParts.push(`<span>📞 ${formattedPhone}</span>`);
+  if (whatsappName && !headerHtml.includes(whatsappName)) {
+    subHeaderParts.push(`<span>WhatsApp: ~${whatsappName}</span>`);
   }
+  subHeaderParts.push(`<span>WhatsApp ID: ${whatsappId}</span>`);
+  const subHeaderHtml = subHeaderParts.join(` <span style="opacity: 0.4;">•</span> `);
 
   return {
-    title: mainName,
+    titleHtml,
     sub: subLine,
-    header: headerText,
+    headerHtml,
+    subHeaderHtml,
     primaryName: deviceName || whatsappName || formattedPhone || "Contact",
+    phone: formattedPhone,
+    whatsappId,
   };
 }
 
@@ -573,10 +592,10 @@ async function loadChats() {
     ...chats.map((c) => {
       const item = el("div", `chat-item${currentChat?.chat_id === c.chat_id ? " active" : ""}`);
       const meta = formatChatMeta(c);
-      item.append(
-        el("div", "name", `${meta.title}${c.muted ? " 🔇" : ""}`),
-        el("div", "sub", meta.sub),
-      );
+      const nameEl = el("div", "name");
+      nameEl.innerHTML = `${meta.titleHtml}${c.muted ? " 🔇" : ""}`;
+      const subEl = el("div", "sub", meta.sub);
+      item.append(nameEl, subEl);
       item.addEventListener("click", () => openChat(c));
       return item;
     }),
@@ -586,7 +605,11 @@ async function loadChats() {
 async function openChat(c) {
   currentChat = c;
   const meta = formatChatMeta(c);
-  $("#conv-title").textContent = meta.header;
+  $("#conv-title").innerHTML = meta.headerHtml;
+  const subEl = $("#conv-sub");
+  if (subEl) {
+    subEl.innerHTML = meta.subHeaderHtml;
+  }
   $("#conv-clear").classList.remove("hidden");
   $("#conv-mute").classList.toggle("hidden", c.chat_id === "dashboard");
   $("#conv-mute").textContent = c.muted ? "Unmute" : "Mute";
