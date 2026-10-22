@@ -13,10 +13,52 @@ async function kvDelete(env, key) {
 }
 async function insertMessage(env, m) {
   const res = await env.DB.prepare(
-    `INSERT OR IGNORE INTO messages (id, chat_id, role, sender, sender_name, content, source, model, neurons, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).bind(m.id, m.chat_id, m.role, m.sender, m.sender_name, m.content, m.source, m.model ?? null, m.neurons ?? null, m.created_at).run();
+    `INSERT OR IGNORE INTO messages (id, chat_id, role, sender, sender_name, content, source, model, neurons, created_at, media_type, media_url, media_mime, deleted_at, deleted_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(
+    m.id,
+    m.chat_id,
+    m.role,
+    m.sender,
+    m.sender_name,
+    m.content,
+    m.source,
+    m.model ?? null,
+    m.neurons ?? null,
+    m.created_at,
+    m.media_type ?? null,
+    m.media_url ?? null,
+    m.media_mime ?? null,
+    m.deleted_at ?? 0,
+    m.deleted_by ?? null
+  ).run();
   return (res.meta.changes ?? 0) > 0;
+}
+async function markMessageDeleted(env, chatId, targetId, deletedBy, deletedAt) {
+  const fullId = targetId.startsWith("wa:") ? targetId : `wa:${chatId}:${targetId}`;
+  const res = await env.DB.prepare(
+    `UPDATE messages 
+     SET deleted_at = ?, deleted_by = ?
+     WHERE (id = ? OR id = ?) AND (deleted_at IS NULL OR deleted_at = 0)`
+  ).bind(deletedAt, deletedBy, fullId, targetId).run();
+  return (res.meta.changes ?? 0) > 0;
+}
+async function cleanupOldMedia(env, days = 10) {
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1e3;
+  const { results } = await env.DB.prepare(
+    "SELECT id, media_url FROM messages WHERE created_at < ? AND media_url IS NOT NULL LIMIT 100"
+  ).bind(cutoff).all();
+  if (!results || results.length === 0) return { deletedCount: 0 };
+  for (const item of results) {
+    if (item.media_url) {
+      await env.BUCKET.delete(item.media_url).catch(() => {
+      });
+    }
+  }
+  await env.DB.prepare(
+    "UPDATE messages SET media_url = NULL WHERE created_at < ? AND media_url IS NOT NULL"
+  ).bind(cutoff).run();
+  return { deletedCount: results.length };
 }
 async function recentMessages(env, chatId, limit, excludeId) {
   if (limit <= 0) return [];
@@ -216,6 +258,12 @@ function shouldAnswer(s, m) {
 }
 async function handleIncoming(env, m) {
   const s = await getSettings(env);
+  if (m.isRevoke && m.revokedMsgId) {
+    const deletedBy = m.revokedBy || (m.fromMe ? "you" : "sender");
+    const deletedAt = m.timestamp ?? Date.now();
+    await markMessageDeleted(env, m.chatId, m.revokedMsgId, deletedBy, deletedAt);
+    return { action: "ignore", reason: `message marked as deleted by ${deletedBy}` };
+  }
   const isOutgoing = m.fromMe && !m.isSelfChat;
   const chatName = m.chatName ?? (isOutgoing ? null : m.senderName ?? null);
   const { muted } = await upsertChat(env, m.chatId, chatName, m.isGroup);
@@ -228,7 +276,10 @@ async function handleIncoming(env, m) {
     sender_name: isOutgoing ? s.ownerName || "You" : m.senderName ?? null,
     content: m.text,
     source: isOutgoing ? "whatsapp-device" : "whatsapp",
-    created_at: m.timestamp ?? Date.now()
+    created_at: m.timestamp ?? Date.now(),
+    media_type: m.mediaType ?? null,
+    media_url: m.mediaUrl ?? null,
+    media_mime: m.mediaMime ?? null
   });
   if (!isNew) return { action: "ignore", reason: "duplicate delivery" };
   if (isOutgoing) {
@@ -431,6 +482,16 @@ async function gatewayRoutes(request, env, url) {
       }
       return json({ ok: true });
     }
+    case "PUT /gw/media": {
+      const mediaKey = url.searchParams.get("key");
+      const mime = url.searchParams.get("mime") || request.headers.get("content-type") || "application/octet-stream";
+      if (!mediaKey) return json({ error: "key is required" }, 400);
+      const buf = await request.arrayBuffer();
+      await env.BUCKET.put(mediaKey, buf, {
+        httpMetadata: { contentType: mime }
+      });
+      return json({ ok: true, key: mediaKey, size: buf.byteLength });
+    }
     case "DELETE /gw/session": {
       await Promise.all([
         env.BUCKET.delete(SESSION_KEY).catch(() => {
@@ -455,6 +516,12 @@ async function dashboardRoutes(request, env, url) {
       ]);
       const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
       const online = !!gateway && Date.now() - gateway.at < GATEWAY_OFFLINE_AFTER_MS;
+      const lastCleanup = await kvGet(env, "last_media_cleanup") || 0;
+      if (Date.now() - lastCleanup > 36e5) {
+        cleanupOldMedia(env, 10).catch(() => {
+        });
+        await kvSet(env, "last_media_cleanup", Date.now());
+      }
       const enhancedGateway = gateway ? {
         ...gateway,
         online,
@@ -605,13 +672,31 @@ async function dashboardRoutes(request, env, url) {
       await deleteRule(env, id);
       return json({ ok: true });
     }
+    case "GET /api/media": {
+      const mediaKey = url.searchParams.get("key");
+      if (!mediaKey) return new Response("key is required", { status: 400 });
+      const obj = await env.BUCKET.get(mediaKey);
+      if (!obj) return new Response("Media not found or expired", { status: 404 });
+      const headers = new Headers();
+      obj.writeHttpMetadata(headers);
+      headers.set("etag", obj.httpEtag);
+      headers.set("cache-control", "public, max-age=86400");
+      return new Response(obj.body, { headers });
+    }
+    case "POST /api/media/cleanup": {
+      const days = Number(url.searchParams.get("days") || 10);
+      const result = await cleanupOldMedia(env, days);
+      return json({ ok: true, ...result });
+    }
   }
   return json({ error: "Not found" }, 404);
 }
 async function authorized(request, secret) {
   if (!secret) return false;
+  const url = new URL(request.url);
   const header = request.headers.get("authorization") ?? "";
-  const given = header.startsWith("Bearer ") ? header.slice(7) : "";
+  const tokenFromQuery = url.searchParams.get("token") ?? "";
+  const given = header.startsWith("Bearer ") ? header.slice(7) : tokenFromQuery;
   const enc = new TextEncoder();
   const [a, b] = await Promise.all([
     crypto.subtle.digest("SHA-256", enc.encode(given)),

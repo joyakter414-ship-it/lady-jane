@@ -12,7 +12,12 @@ CREATE TABLE IF NOT EXISTS messages (
   source      TEXT NOT NULL DEFAULT 'whatsapp',  -- 'whatsapp' | 'dashboard'
   model       TEXT,
   neurons     REAL,
-  created_at  INTEGER NOT NULL           -- unix ms
+  created_at  INTEGER NOT NULL,          -- unix ms
+  media_type  TEXT,                      -- 'image' | 'audio' | 'video' | 'document' | 'sticker'
+  media_url   TEXT,                      -- R2 object key
+  media_mime  TEXT,                      -- mimetype
+  deleted_at  INTEGER DEFAULT 0,         -- unsend timestamp if deleted
+  deleted_by  TEXT                       -- 'sender' | 'you'
 );
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages (chat_id, created_at);
 

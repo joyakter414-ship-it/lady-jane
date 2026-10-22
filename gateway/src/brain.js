@@ -12,8 +12,8 @@ if (!BRAIN_URL || !GATEWAY_TOKEN) {
  * Call the brain. Retries network errors and 5xx responses a couple of times;
  * 4xx responses are returned/thrown immediately since retrying won't help.
  */
-export async function brain(method, path, { json, body, raw = false, retries = 2 } = {}) {
-  const headers = { authorization: `Bearer ${GATEWAY_TOKEN}` };
+export async function brain(method, path, { json, body, headers: customHeaders = {}, raw = false, retries = 2 } = {}) {
+  const headers = { authorization: `Bearer ${GATEWAY_TOKEN}`, ...customHeaders };
   if (json !== undefined) headers["content-type"] = "application/json";
   const init = { method, headers, body: json !== undefined ? JSON.stringify(json) : body };
 

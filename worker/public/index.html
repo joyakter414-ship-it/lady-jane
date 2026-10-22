@@ -234,6 +234,18 @@
           </label>
         </fieldset>
 
+        <fieldset>
+          <legend>Cloud Media Storage & Retention (10-Day Purge)</legend>
+          <div style="font-size: 13px; color: var(--muted); line-height: 1.5;">
+            Voice messages, photos, and videos sent or received on WhatsApp are saved to Cloudflare R2 immediately.
+            To keep cloud storage light, heavy media files older than <b>10 days</b> are automatically purged while preserving all text and message history in Conversations.
+          </div>
+          <div style="margin-top: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+            <button type="button" id="btn-clean-media" class="ghost small">🧹 Clean Media Older than 10 Days Now</button>
+            <span id="clean-media-status" class="small-text muted"></span>
+          </div>
+        </fieldset>
+
         <div class="actions">
           <button type="submit">Save</button>
           <span id="settings-saved" class="muted"></span>

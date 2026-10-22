@@ -9,6 +9,7 @@ import { createServer } from "node:http";
 import makeWASocket, {
   Browsers,
   DisconnectReason,
+  downloadMediaMessage,
   fetchLatestBaileysVersion,
   isJidGroup,
   isPnUser,
@@ -16,7 +17,9 @@ import makeWASocket, {
   jidNormalizedUser,
   makeCacheableSignalKeyStore,
   normalizeMessageContent,
+  proto,
   useMultiFileAuthState,
+  WAMessageStubType,
 } from "@whiskeysockets/baileys";
 import pino from "pino";
 import QRCode from "qrcode";
@@ -157,6 +160,37 @@ async function start() {
       onMessage(msg).catch((err) => log.error({ err: String(err), stack: err?.stack }, "Failed to handle message"));
     }
   });
+
+  sock.ev.on("messages.update", async (updates) => {
+    for (const update of updates) {
+      const isRevoke =
+        update.update?.messageStubType === WAMessageStubType.REVOKE ||
+        update.update?.messageStubType === WAMessageStubType.ADMIN_REVOKE ||
+        update.update?.message === null;
+      if (isRevoke) {
+        const targetId = update.key?.id;
+        const targetChat = update.key?.remoteJid;
+        const fromMe = Boolean(update.key?.fromMe);
+        if (targetId && targetChat) {
+          log.info({ targetId, targetChat, fromMe }, "⚠️ messages.update REVOKE detected! Preserving in DB.");
+          await brain("POST", "/gw/message", {
+            json: {
+              id: `revoke_${targetId}_${Date.now()}`,
+              chatId: jidNormalizedUser(targetChat),
+              isGroup: isJidGroup(targetChat),
+              isSelfChat: false,
+              fromMe,
+              text: "[Message deleted]",
+              isRevoke: true,
+              revokedMsgId: targetId,
+              revokedBy: fromMe ? "you" : "sender",
+              timestamp: Date.now(),
+            },
+          }).catch((err) => log.error({ err: String(err) }, "Failed to report revoke"));
+        }
+      }
+    }
+  });
 }
 
 function scheduleRestart(delay) {
@@ -170,6 +204,54 @@ function fatalRetry(err) {
 }
 
 // ─── Messages ────────────────────────────────────────────────────────────────
+
+function detectMedia(message) {
+  const m = normalizeMessageContent(message);
+  if (!m) return null;
+  if (m.imageMessage) {
+    return {
+      type: "image",
+      mime: m.imageMessage.mimetype || "image/jpeg",
+      ext: "jpg",
+      caption: m.imageMessage.caption || "",
+    };
+  }
+  if (m.audioMessage) {
+    return {
+      type: "audio",
+      mime: m.audioMessage.mimetype || "audio/ogg; codecs=opus",
+      ext: m.audioMessage.ptt ? "ogg" : "mp3",
+      caption: m.audioMessage.ptt ? "🎤 Voice message" : "🎵 Audio",
+    };
+  }
+  if (m.videoMessage) {
+    return {
+      type: "video",
+      mime: m.videoMessage.mimetype || "video/mp4",
+      ext: "mp4",
+      caption: m.videoMessage.caption || "🎥 Video",
+    };
+  }
+  if (m.documentMessage) {
+    const fn = m.documentMessage.fileName || "document";
+    const ext = fn.includes(".") ? fn.split(".").pop() : "bin";
+    return {
+      type: "document",
+      mime: m.documentMessage.mimetype || "application/octet-stream",
+      ext,
+      caption: m.documentMessage.caption || `📄 ${fn}`,
+    };
+  }
+  if (m.stickerMessage) {
+    return {
+      type: "sticker",
+      mime: m.stickerMessage.mimetype || "image/webp",
+      ext: "webp",
+      caption: "🎨 Sticker",
+    };
+  }
+  return null;
+}
 
 function extractText(message) {
   const m = normalizeMessageContent(message);
@@ -231,16 +313,85 @@ async function onMessage(msg) {
   const chatJid = key?.remoteJid;
   if (!key?.id || !chatJid || sentIds.has(key.id)) return;
   if (chatJid === "status@broadcast" || chatJid.endsWith("@broadcast") || chatJid.endsWith("@newsletter")) return;
-  if (!msg.message || msg.messageStubType) return;
-
-  const text = extractText(msg.message);
-  if (!text) return; // text only for now (voice/images can come later)
+  if (!msg.message && !msg.messageStubType) return;
 
   const sentAt = Number(msg.messageTimestamp || 0) * 1000;
   if (sentAt && Date.now() - sentAt > MAX_MESSAGE_AGE_MS) return;
 
   const isGroup = !!isJidGroup(chatJid);
   const isSelfChat = !isGroup && (isMe(chatJid) || isMe(key.remoteJidAlt));
+
+  // 1. Check for protocol revoke / unsend ("Delete for Everyone"):
+  const mContent = normalizeMessageContent(msg.message);
+  const protocolMsg = mContent?.protocolMessage;
+  if (
+    protocolMsg &&
+    (protocolMsg.type === proto.Message.ProtocolMessage.Type.REVOKE ||
+      protocolMsg.type === 0 ||
+      protocolMsg.type === 14)
+  ) {
+    const targetId = protocolMsg.key?.id;
+    const targetChat = protocolMsg.key?.remoteJid || chatJid;
+    const targetFromMe = Boolean(protocolMsg.key?.fromMe);
+    if (targetId) {
+      log.info({ targetId, targetChat, targetFromMe }, "⚠️ Protocol unsend/revoke detected! Preserving original message in DB with deleted tag.");
+      await brain("POST", "/gw/message", {
+        json: {
+          id: key.id,
+          chatId: jidNormalizedUser(targetChat),
+          isGroup: isJidGroup(targetChat),
+          isSelfChat: !isJidGroup(targetChat) && (isMe(targetChat) || isMe(key.remoteJidAlt)),
+          fromMe: targetFromMe,
+          senderPhone: isJidGroup(targetChat) ? phoneOf(key.participant, key.participantAlt) : phoneOf(targetChat, key.remoteJidAlt),
+          senderName: targetFromMe ? me.name : msg.pushName || null,
+          text: "[Message deleted]",
+          isRevoke: true,
+          revokedMsgId: targetId,
+          revokedBy: targetFromMe ? "you" : "sender",
+          timestamp: sentAt || Date.now(),
+        },
+      }).catch((err) => log.error({ err: String(err) }, "Failed to report protocol revoke"));
+      return;
+    }
+  }
+
+  // 2. Download media (image, voice, video, document, sticker) and upload directly to R2:
+  const mediaInfo = detectMedia(msg.message);
+  let mediaUrl = null;
+  let mediaType = mediaInfo?.type || null;
+  let mediaMime = mediaInfo?.mime || null;
+
+  if (mediaInfo) {
+    try {
+      log.info({ type: mediaInfo.type, id: key.id }, "📥 Downloading media from WhatsApp...");
+      const buffer = await downloadMediaMessage(
+        msg,
+        "buffer",
+        {},
+        { logger: waLog, reuploadRequest: sock.updateMediaMessage }
+      );
+      if (buffer && buffer.length > 0) {
+        const cleanChat = (isGroup ? chatJid : phoneOf(chatJid, key.remoteJidAlt) || chatJid).replace(/[^a-zA-Z0-9_-]/g, "_");
+        const objectKey = `media/${cleanChat}/${key.id}.${mediaInfo.ext}`;
+        log.info({ objectKey, size: buffer.length }, "☁️ Uploading media directly to Cloudflare R2...");
+        await brain("PUT", `/gw/media?key=${encodeURIComponent(objectKey)}&mime=${encodeURIComponent(mediaInfo.mime)}`, {
+          body: buffer,
+          headers: { "content-type": mediaInfo.mime },
+        });
+        mediaUrl = objectKey;
+        log.info({ objectKey }, "✅ Media uploaded to R2 successfully!");
+      }
+    } catch (err) {
+      log.error({ err: String(err), id: key.id }, "Failed to download/upload media to R2");
+    }
+  }
+
+  let text = extractText(msg.message);
+  if (!text && mediaInfo) {
+    text = mediaInfo.caption || `[${mediaInfo.type.toUpperCase()}]`;
+  }
+  if (!text && !mediaInfo) return;
+
   if (key.fromMe && msg.pushName && (!me.name || me.name !== msg.pushName)) {
     me.name = msg.pushName;
     sendStatus().catch(() => {});
@@ -260,9 +411,12 @@ async function onMessage(msg) {
     fromMe: !!key.fromMe,
     senderPhone: isGroup ? phoneOf(key.participant, key.participantAlt) : phoneOf(chatJid, key.remoteJidAlt),
     senderName: key.fromMe ? me.name : msg.pushName || null,
-    text: text.slice(0, 4000),
+    text: (text || "").slice(0, 4000),
     mentioned,
     timestamp: sentAt || Date.now(),
+    mediaType,
+    mediaUrl,
+    mediaMime,
   };
 
   const decision = await brain("POST", "/gw/message", { json: payload });

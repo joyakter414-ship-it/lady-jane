@@ -28,6 +28,11 @@ export interface StoredMessage {
   model: string | null;
   neurons: number | null;
   created_at: number;
+  media_type?: string | null;
+  media_url?: string | null;
+  media_mime?: string | null;
+  deleted_at?: number | null;
+  deleted_by?: string | null;
 }
 
 /**
@@ -36,12 +41,77 @@ export interface StoredMessage {
  */
 export async function insertMessage(env: AppEnv, m: Omit<StoredMessage, "model" | "neurons"> & Partial<StoredMessage>): Promise<boolean> {
   const res = await env.DB.prepare(
-    `INSERT OR IGNORE INTO messages (id, chat_id, role, sender, sender_name, content, source, model, neurons, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR IGNORE INTO messages (id, chat_id, role, sender, sender_name, content, source, model, neurons, created_at, media_type, media_url, media_mime, deleted_at, deleted_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(m.id, m.chat_id, m.role, m.sender, m.sender_name, m.content, m.source, m.model ?? null, m.neurons ?? null, m.created_at)
+    .bind(
+      m.id,
+      m.chat_id,
+      m.role,
+      m.sender,
+      m.sender_name,
+      m.content,
+      m.source,
+      m.model ?? null,
+      m.neurons ?? null,
+      m.created_at,
+      m.media_type ?? null,
+      m.media_url ?? null,
+      m.media_mime ?? null,
+      m.deleted_at ?? 0,
+      m.deleted_by ?? null
+    )
     .run();
   return (res.meta.changes ?? 0) > 0;
+}
+
+/**
+ * Mark a message as unsend/deleted by sender or user without removing the content or media.
+ */
+export async function markMessageDeleted(
+  env: AppEnv,
+  chatId: string,
+  targetId: string,
+  deletedBy: string,
+  deletedAt: number
+): Promise<boolean> {
+  const fullId = targetId.startsWith("wa:") ? targetId : `wa:${chatId}:${targetId}`;
+  const res = await env.DB.prepare(
+    `UPDATE messages 
+     SET deleted_at = ?, deleted_by = ?
+     WHERE (id = ? OR id = ?) AND (deleted_at IS NULL OR deleted_at = 0)`
+  )
+    .bind(deletedAt, deletedBy, fullId, targetId)
+    .run();
+  return (res.meta.changes ?? 0) > 0;
+}
+
+/**
+ * Automatically purge heavy files (images, audio, video) older than X days from Cloudflare R2
+ */
+export async function cleanupOldMedia(env: AppEnv, days = 10): Promise<{ deletedCount: number }> {
+  const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+  const { results } = await env.DB.prepare(
+    "SELECT id, media_url FROM messages WHERE created_at < ? AND media_url IS NOT NULL LIMIT 100"
+  )
+    .bind(cutoff)
+    .all<{ id: string; media_url: string }>();
+
+  if (!results || results.length === 0) return { deletedCount: 0 };
+
+  for (const item of results) {
+    if (item.media_url) {
+      await env.BUCKET.delete(item.media_url).catch(() => {});
+    }
+  }
+
+  await env.DB.prepare(
+    "UPDATE messages SET media_url = NULL WHERE created_at < ? AND media_url IS NOT NULL"
+  )
+    .bind(cutoff)
+    .run();
+
+  return { deletedCount: results.length };
 }
 
 export async function recentMessages(env: AppEnv, chatId: string, limit: number, excludeId?: string): Promise<StoredMessage[]> {

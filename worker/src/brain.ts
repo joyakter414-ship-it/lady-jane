@@ -1,5 +1,5 @@
 import type { AppEnv } from "./env";
-import { addUsage, getEnabledRules, insertMessage, recentMessages, upsertChat, type Rule } from "./db";
+import { addUsage, getEnabledRules, insertMessage, markMessageDeleted, recentMessages, upsertChat, type Rule } from "./db";
 import { buildSystemPrompt } from "./persona";
 import { getProvider, type ChatMessage } from "./providers";
 import { getSettings, type Settings } from "./settings";
@@ -19,6 +19,12 @@ export interface IncomingMessage {
   /** Lady Jane's number was @mentioned, or the message replies to her. */
   mentioned?: boolean;
   timestamp?: number;
+  mediaType?: "image" | "audio" | "video" | "document" | "sticker" | null;
+  mediaUrl?: string | null;
+  mediaMime?: string | null;
+  isRevoke?: boolean;
+  revokedMsgId?: string | null;
+  revokedBy?: string | null;
 }
 
 export type Decision =
@@ -60,6 +66,14 @@ export function shouldAnswer(s: Settings, m: IncomingMessage): { ok: true } | { 
 export async function handleIncoming(env: AppEnv, m: IncomingMessage): Promise<Decision> {
   const s = await getSettings(env);
 
+  // If this is an unsend/revoke notification, mark original message as deleted without destroying the content!
+  if (m.isRevoke && m.revokedMsgId) {
+    const deletedBy = m.revokedBy || (m.fromMe ? "you" : "sender");
+    const deletedAt = m.timestamp ?? Date.now();
+    await markMessageDeleted(env, m.chatId, m.revokedMsgId, deletedBy, deletedAt);
+    return { action: "ignore", reason: `message marked as deleted by ${deletedBy}` };
+  }
+
   const isOutgoing = m.fromMe && !m.isSelfChat;
   const chatName = m.chatName ?? (isOutgoing ? null : m.senderName ?? null);
 
@@ -78,6 +92,9 @@ export async function handleIncoming(env: AppEnv, m: IncomingMessage): Promise<D
     content: m.text,
     source: isOutgoing ? "whatsapp-device" : "whatsapp",
     created_at: m.timestamp ?? Date.now(),
+    media_type: m.mediaType ?? null,
+    media_url: m.mediaUrl ?? null,
+    media_mime: m.mediaMime ?? null,
   });
   if (!isNew) return { action: "ignore", reason: "duplicate delivery" };
 

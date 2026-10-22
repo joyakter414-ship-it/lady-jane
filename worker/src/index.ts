@@ -1,6 +1,6 @@
 import type { AppEnv } from "./env";
 import { handleDashboardChat, handleIncoming, type IncomingMessage } from "./brain";
-import { createRule, deleteRule, getRules, insertMessage, kvDelete, kvGet, kvSet, updateRule, upsertChat } from "./db";
+import { cleanupOldMedia, createRule, deleteRule, getRules, insertMessage, kvDelete, kvGet, kvSet, updateRule, upsertChat } from "./db";
 import { getSettings, MODELS, saveSettings, type Settings } from "./settings";
 
 const SESSION_KEY = "whatsapp/session.bin";
@@ -99,6 +99,16 @@ async function gatewayRoutes(request: Request, env: AppEnv, url: URL): Promise<R
       } catch {}
       return json({ ok: true });
     }
+    case "PUT /gw/media": {
+      const mediaKey = url.searchParams.get("key");
+      const mime = url.searchParams.get("mime") || request.headers.get("content-type") || "application/octet-stream";
+      if (!mediaKey) return json({ error: "key is required" }, 400);
+      const buf = await request.arrayBuffer();
+      await env.BUCKET.put(mediaKey, buf, {
+        httpMetadata: { contentType: mime }
+      });
+      return json({ ok: true, key: mediaKey, size: buf.byteLength });
+    }
     case "DELETE /gw/session": {
       await Promise.all([
         env.BUCKET.delete(SESSION_KEY).catch(() => {}),
@@ -125,6 +135,13 @@ async function dashboardRoutes(request: Request, env: AppEnv, url: URL): Promise
       ]);
       const today = new Date().toISOString().slice(0, 10);
       const online = !!gateway && Date.now() - gateway.at < GATEWAY_OFFLINE_AFTER_MS;
+
+      // Opportunistic automatic cleanup of media older than 10 days
+      const lastCleanup = (await kvGet<number>(env, "last_media_cleanup")) || 0;
+      if (Date.now() - lastCleanup > 3600_000) {
+        cleanupOldMedia(env, 10).catch(() => {});
+        await kvSet(env, "last_media_cleanup", Date.now());
+      }
       const enhancedGateway = gateway ? {
         ...gateway,
         online,
@@ -286,17 +303,35 @@ async function dashboardRoutes(request: Request, env: AppEnv, url: URL): Promise
       await deleteRule(env, id);
       return json({ ok: true });
     }
+    case "GET /api/media": {
+      const mediaKey = url.searchParams.get("key");
+      if (!mediaKey) return new Response("key is required", { status: 400 });
+      const obj = await env.BUCKET.get(mediaKey);
+      if (!obj) return new Response("Media not found or expired", { status: 404 });
+      const headers = new Headers();
+      obj.writeHttpMetadata(headers);
+      headers.set("etag", obj.httpEtag);
+      headers.set("cache-control", "public, max-age=86400");
+      return new Response(obj.body, { headers });
+    }
+    case "POST /api/media/cleanup": {
+      const days = Number(url.searchParams.get("days") || 10);
+      const result = await cleanupOldMedia(env, days);
+      return json({ ok: true, ...result });
+    }
   }
   return json({ error: "Not found" }, 404);
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Constant-time check of `Authorization: Bearer <secret>`. */
+/** Constant-time check of `Authorization: Bearer <secret>` or `?token=<secret>`. */
 async function authorized(request: Request, secret: string | undefined): Promise<boolean> {
   if (!secret) return false;
+  const url = new URL(request.url);
   const header = request.headers.get("authorization") ?? "";
-  const given = header.startsWith("Bearer ") ? header.slice(7) : "";
+  const tokenFromQuery = url.searchParams.get("token") ?? "";
+  const given = header.startsWith("Bearer ") ? header.slice(7) : tokenFromQuery;
   const enc = new TextEncoder();
   const [a, b] = await Promise.all([
     crypto.subtle.digest("SHA-256", enc.encode(given)),

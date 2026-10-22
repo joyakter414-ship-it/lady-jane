@@ -345,7 +345,86 @@ $("#wa-reset").addEventListener("click", async () => {
 
 function bubble(m) {
   const isMe = m.role === "assistant";
-  const b = el("div", `msg ${m.role}`, m.content);
+  const b = el("div", `msg ${m.role}`);
+
+  // Anti-delete / Unsend Notice Tag
+  if (m.deleted_at) {
+    const delTime = fmtTime(m.deleted_at);
+    const delBy = m.deleted_by === "you" ? "you" : "sender";
+    const mediaLabel =
+      m.media_type === "image"
+        ? "Image"
+        : m.media_type === "audio"
+        ? "Voice message"
+        : m.media_type === "video"
+        ? "Video"
+        : m.media_type === "document"
+        ? "Document"
+        : "Message";
+    const delTag = el(
+      "div",
+      "deleted-tag",
+      `⚠️ ${mediaLabel} deleted by ${delBy} [${delTime}]`
+    );
+    delTag.style.cssText =
+      "display: block; font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 6px; background: rgba(255, 107, 122, 0.18); color: #ff6b7a; border: 1px solid rgba(255, 107, 122, 0.4); margin-bottom: 6px; width: fit-content;";
+    b.append(delTag);
+  }
+
+  // Media Player / Image / Voice
+  const password = localStorage.getItem("lj_password") || "";
+  if (m.media_url) {
+    const mediaSrc = `/api/media?key=${encodeURIComponent(m.media_url)}&token=${encodeURIComponent(password)}`;
+    if (m.media_type === "image" || m.media_type === "sticker") {
+      const img = el("img", "msg-media-img");
+      img.src = mediaSrc;
+      img.alt = "WhatsApp image";
+      img.loading = "lazy";
+      img.style.cssText = "max-width: 100%; max-height: 320px; border-radius: 8px; display: block; margin: 6px 0; cursor: pointer;";
+      img.onclick = () => window.open(mediaSrc, "_blank");
+      b.append(img);
+    } else if (m.media_type === "audio") {
+      const audioContainer = el("div", "msg-media-audio-box");
+      audioContainer.style.cssText = "margin: 6px 0; display: flex; flex-direction: column; gap: 4px;";
+      const audioLabel = el("div", "small-text muted", "🎤 Voice Message:");
+      const audio = el("audio", "msg-media-audio");
+      audio.src = mediaSrc;
+      audio.controls = true;
+      audio.preload = "metadata";
+      audio.style.cssText = "width: 100%; min-width: 230px; height: 38px;";
+      audioContainer.append(audioLabel, audio);
+      b.append(audioContainer);
+    } else if (m.media_type === "video") {
+      const video = el("video", "msg-media-video");
+      video.src = mediaSrc;
+      video.controls = true;
+      video.preload = "metadata";
+      video.style.cssText = "max-width: 100%; max-height: 320px; border-radius: 8px; display: block; margin: 6px 0;";
+      b.append(video);
+    } else if (m.media_type === "document") {
+      const docLink = el("a", "msg-media-doc", `📄 Download ${m.content || "Document"}`);
+      docLink.href = mediaSrc;
+      docLink.target = "_blank";
+      docLink.style.cssText = "display: inline-block; margin: 6px 0; color: var(--gold-2); text-decoration: underline; font-weight: 500;";
+      b.append(docLink);
+    }
+  }
+
+  // Text content
+  const isGenericPlaceholder =
+    m.media_type &&
+    (m.content === `[${m.media_type.toUpperCase()}]` ||
+      m.content === "🎤 Voice message" ||
+      m.content === "🎵 Audio" ||
+      m.content === "🎥 Video" ||
+      m.content === "🎨 Sticker");
+
+  if (m.content && !isGenericPlaceholder) {
+    const textNode = el("div", "msg-text", m.content);
+    textNode.style.cssText = "word-break: break-word;";
+    b.append(textNode);
+  }
+
   let sender = "Them";
   if (isMe) {
     if (m.source === "whatsapp-device") {
@@ -666,6 +745,21 @@ $("#settings-form").addEventListener("submit", async (e) => {
     setTimeout(() => ($("#settings-saved").textContent = ""), 2500);
   } catch (err) {
     $("#settings-saved").textContent = `⚠️ ${err.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#btn-clean-media")?.addEventListener("click", async () => {
+  const btn = $("#btn-clean-media");
+  const status = $("#clean-media-status");
+  btn.disabled = true;
+  status.textContent = "Checking files older than 10 days…";
+  try {
+    const res = await api("POST", "/api/media/cleanup?days=10");
+    status.textContent = `Cleaned ${res.deletedCount || 0} expired media file(s).`;
+  } catch (err) {
+    status.textContent = `Failed: ${err.message}`;
   } finally {
     btn.disabled = false;
   }
