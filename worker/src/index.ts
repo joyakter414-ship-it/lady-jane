@@ -1,6 +1,6 @@
 import type { AppEnv } from "./env";
 import { handleDashboardChat, handleIncoming, type IncomingMessage } from "./brain";
-import { cleanupOldMedia, createRule, deleteRule, getRules, insertMessage, kvDelete, kvGet, kvSet, updateRule, upsertChat } from "./db";
+import { cleanupOldMedia, createRule, deleteRule, getRules, insertMessage, kvDelete, kvGet, kvSet, updateContacts, updateRule, upsertChat } from "./db";
 import { getSettings, MODELS, saveSettings, type Settings } from "./settings";
 
 const SESSION_KEY = "whatsapp/session.bin";
@@ -42,6 +42,15 @@ async function gatewayRoutes(request: Request, env: AppEnv, url: URL): Promise<R
       const m = (await request.json()) as IncomingMessage;
       if (!m?.id || !m?.chatId || typeof m.text !== "string") return json({ error: "Invalid message" }, 400);
       return json(await handleIncoming(env, m));
+    }
+    case "POST /gw/contacts": {
+      const { contacts } = (await request.json()) as {
+        contacts: Array<{ id: string; name?: string; notify?: string; phone?: string }>;
+      };
+      if (Array.isArray(contacts) && contacts.length > 0) {
+        await updateContacts(env, contacts);
+      }
+      return json({ ok: true, count: contacts?.length || 0 });
     }
     case "POST /gw/status": {
       const body = (await request.json()) as Omit<GatewayStatus, "at">;
@@ -203,7 +212,7 @@ async function dashboardRoutes(request: Request, env: AppEnv, url: URL): Promise
     }
     case "GET /api/chats": {
       const { results } = await env.DB.prepare(
-        `SELECT c.chat_id, c.name, c.is_group, c.muted, c.last_at,
+        `SELECT c.chat_id, c.name, c.notify_name, c.phone, c.is_group, c.muted, c.last_at,
                 (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.chat_id) AS message_count
          FROM chats c ORDER BY c.last_at DESC LIMIT 100`,
       ).all();

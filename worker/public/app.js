@@ -435,7 +435,21 @@ function bubble(m) {
       sender = "Lady Jane 👑";
     }
   } else {
-    sender = m.sender_name ? `${m.sender_name}` : (m.sender ? `+${m.sender}` : "Them");
+    const ownerName = (overview?.settings?.ownerName || "").toLowerCase().trim();
+    const ownerEmail = (overview?.gateway?.me?.name || "").toLowerCase().trim();
+    const isBad = (s) => {
+      if (!s) return true;
+      const v = s.toLowerCase().trim();
+      return v.includes("@gmail") || v.includes("@yahoo") || (ownerName && v === ownerName) || (ownerEmail && v === ownerEmail);
+    };
+
+    if (m.sender_name && !isBad(m.sender_name)) {
+      sender = m.sender && !m.sender_name.includes(m.sender) ? `${m.sender_name} (+${m.sender})` : m.sender_name;
+    } else if (m.sender) {
+      sender = `+${m.sender}`;
+    } else {
+      sender = "Them";
+    }
   }
   const meta = [sender, m.created_at ? fmtTime(m.created_at) : ""];
   if (m.neurons) meta.push(`${m.neurons.toFixed(1)} neurons`);
@@ -479,6 +493,75 @@ $("#chat-reset").addEventListener("click", async () => {
 
 // ─── Conversations ───────────────────────────────────────────────────────────
 
+function formatChatMeta(c) {
+  if (c.chat_id === "dashboard") {
+    return {
+      title: "Dashboard",
+      sub: "AI test sandbox",
+      header: "Dashboard 👑",
+      primaryName: "Dashboard",
+    };
+  }
+
+  const ownerName = (overview?.settings?.ownerName || "").toLowerCase().trim();
+  const ownerEmail = (overview?.gateway?.me?.name || "").toLowerCase().trim();
+
+  const isInvalid = (val) => {
+    if (!val) return true;
+    const v = val.toLowerCase().trim();
+    if (v.includes("@gmail") || v.includes("@yahoo") || v.includes("@hotmail")) return true;
+    if (ownerName && v === ownerName) return true;
+    if (ownerEmail && v === ownerEmail) return true;
+    return false;
+  };
+
+  const deviceName = !isInvalid(c.name) ? c.name.trim() : null;
+  const whatsappName = !isInvalid(c.notify_name) ? c.notify_name.trim() : null;
+  const phone = c.phone || (!c.is_group && c.chat_id.includes("@s.whatsapp.net") ? c.chat_id.split("@")[0] : "");
+  const formattedPhone = phone ? (phone.startsWith("+") ? phone : `+${phone}`) : "";
+
+  if (c.is_group) {
+    const title = `👥 ${c.name || "WhatsApp Group"}`;
+    return {
+      title,
+      sub: `${c.message_count} messages · ${fmtTime(c.last_at)}`,
+      header: title,
+      primaryName: c.name || "WhatsApp Group",
+    };
+  }
+
+  // 1-on-1 Contact chat:
+  // Shows: name set in other device, whatsapp username, number
+  let mainName = "";
+  if (deviceName && whatsappName && deviceName.toLowerCase() !== whatsappName.toLowerCase()) {
+    mainName = `${deviceName} (~${whatsappName})`;
+  } else if (deviceName) {
+    mainName = deviceName;
+  } else if (whatsappName) {
+    mainName = `~${whatsappName}`;
+  } else {
+    mainName = formattedPhone || c.chat_id;
+  }
+
+  const subLine = [
+    formattedPhone && mainName !== formattedPhone ? formattedPhone : "",
+    `${c.message_count} messages`,
+    fmtTime(c.last_at),
+  ].filter(Boolean).join(" · ");
+
+  let headerText = mainName;
+  if (formattedPhone && !headerText.includes(formattedPhone)) {
+    headerText = `${mainName} (${formattedPhone})`;
+  }
+
+  return {
+    title: mainName,
+    sub: subLine,
+    header: headerText,
+    primaryName: deviceName || whatsappName || formattedPhone || "Contact",
+  };
+}
+
 async function loadChats() {
   const { chats } = await api("GET", "/api/chats");
   const list = $("#chat-list");
@@ -489,11 +572,10 @@ async function loadChats() {
   list.replaceChildren(
     ...chats.map((c) => {
       const item = el("div", `chat-item${currentChat?.chat_id === c.chat_id ? " active" : ""}`);
-      const name = c.name || c.chat_id.split("@")[0];
-      const phone = !c.is_group && c.chat_id.includes("@s.whatsapp.net") ? c.chat_id.split("@")[0] : "";
+      const meta = formatChatMeta(c);
       item.append(
-        el("div", "name", `${c.is_group ? "👥 " : ""}${name}${c.muted ? " 🔇" : ""}`),
-        el("div", "sub", `${c.name && phone && phone !== c.name ? `+${phone} · ` : ""}${c.message_count} messages · ${fmtTime(c.last_at)}`),
+        el("div", "name", `${meta.title}${c.muted ? " 🔇" : ""}`),
+        el("div", "sub", meta.sub),
       );
       item.addEventListener("click", () => openChat(c));
       return item;
@@ -503,8 +585,8 @@ async function loadChats() {
 
 async function openChat(c) {
   currentChat = c;
-  const phone = !c.is_group && c.chat_id.includes("@s.whatsapp.net") ? c.chat_id.split("@")[0] : "";
-  $("#conv-title").textContent = c.name && phone && phone !== c.name ? `${c.name} (+${phone})` : (c.name || c.chat_id);
+  const meta = formatChatMeta(c);
+  $("#conv-title").textContent = meta.header;
   $("#conv-clear").classList.remove("hidden");
   $("#conv-mute").classList.toggle("hidden", c.chat_id === "dashboard");
   $("#conv-mute").textContent = c.muted ? "Unmute" : "Mute";
@@ -534,7 +616,7 @@ async function openChat(c) {
       form.classList.add("hidden");
     } else {
       form.classList.remove("hidden");
-      input.placeholder = `Write a message to ${c.name || c.chat_id.split("@")[0]}…`;
+      input.placeholder = `Write a message to ${meta.primaryName}…`;
       input.focus();
     }
   }

@@ -124,15 +124,60 @@ export async function recentMessages(env: AppEnv, chatId: string, limit: number,
   return results.reverse();
 }
 
-export async function upsertChat(env: AppEnv, chatId: string, name: string | null, isGroup: boolean): Promise<{ muted: boolean }> {
+export async function upsertChat(
+  env: AppEnv,
+  chatId: string,
+  name: string | null = null,
+  notifyName: string | null = null,
+  phone: string | null = null,
+  isGroup: boolean = false
+): Promise<{ muted: boolean }> {
   const row = await env.DB.prepare(
-    `INSERT INTO chats (chat_id, name, is_group, last_at) VALUES (?1, ?2, ?3, ?4)
-     ON CONFLICT(chat_id) DO UPDATE SET name = COALESCE(?2, name), last_at = ?4
+    `INSERT INTO chats (chat_id, name, notify_name, phone, is_group, last_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+     ON CONFLICT(chat_id) DO UPDATE SET
+       name = COALESCE(?2, name),
+       notify_name = COALESCE(?3, notify_name),
+       phone = COALESCE(?4, phone),
+       last_at = ?6
      RETURNING muted`,
   )
-    .bind(chatId, name, isGroup ? 1 : 0, Date.now())
+    .bind(chatId, name, notifyName, phone, isGroup ? 1 : 0, Date.now())
     .first<{ muted: number }>();
   return { muted: Boolean(row?.muted) };
+}
+
+export async function updateContacts(
+  env: AppEnv,
+  contacts: Array<{ id: string; name?: string; notify?: string; phone?: string }>
+): Promise<void> {
+  const stmts = [];
+  for (const c of contacts) {
+    if (!c?.id) continue;
+    const name = c.name?.trim() || null;
+    const notify = c.notify?.trim() || null;
+    const phone = c.phone || (c.id.includes("@s.whatsapp.net") ? c.id.split("@")[0] : null);
+    if (!name && !notify && !phone) continue;
+
+    const cleanName = name && (name.includes("@gmail") || name.toLowerCase() === "sadia") ? null : name;
+    const cleanNotify = notify && (notify.includes("@gmail") || notify.toLowerCase() === "sadia") ? null : notify;
+
+    stmts.push(
+      env.DB.prepare(
+        `UPDATE chats SET
+           name = COALESCE(?1, name),
+           notify_name = COALESCE(?2, notify_name),
+           phone = COALESCE(?3, phone)
+         WHERE chat_id = ?4 OR chat_id = ?5`,
+      ).bind(cleanName, cleanNotify, phone, c.id, phone ? `${phone}@s.whatsapp.net` : c.id)
+    );
+  }
+  for (let i = 0; i < stmts.length; i += 50) {
+    const chunk = stmts.slice(i, i + 50);
+    if (chunk.length > 0) {
+      await env.DB.batch(chunk).catch(() => {});
+    }
+  }
 }
 
 export async function addUsage(env: AppEnv, neurons: number | undefined): Promise<void> {

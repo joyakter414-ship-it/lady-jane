@@ -67,13 +67,46 @@ async function recentMessages(env, chatId, limit, excludeId) {
   ).bind(chatId, excludeId ?? "", limit).all();
   return results.reverse();
 }
-async function upsertChat(env, chatId, name, isGroup) {
+async function upsertChat(env, chatId, name = null, notifyName = null, phone = null, isGroup = false) {
   const row = await env.DB.prepare(
-    `INSERT INTO chats (chat_id, name, is_group, last_at) VALUES (?1, ?2, ?3, ?4)
-     ON CONFLICT(chat_id) DO UPDATE SET name = COALESCE(?2, name), last_at = ?4
+    `INSERT INTO chats (chat_id, name, notify_name, phone, is_group, last_at)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+     ON CONFLICT(chat_id) DO UPDATE SET
+       name = COALESCE(?2, name),
+       notify_name = COALESCE(?3, notify_name),
+       phone = COALESCE(?4, phone),
+       last_at = ?6
      RETURNING muted`
-  ).bind(chatId, name, isGroup ? 1 : 0, Date.now()).first();
+  ).bind(chatId, name, notifyName, phone, isGroup ? 1 : 0, Date.now()).first();
   return { muted: Boolean(row?.muted) };
+}
+async function updateContacts(env, contacts) {
+  const stmts = [];
+  for (const c of contacts) {
+    if (!c?.id) continue;
+    const name = c.name?.trim() || null;
+    const notify = c.notify?.trim() || null;
+    const phone = c.phone || (c.id.includes("@s.whatsapp.net") ? c.id.split("@")[0] : null);
+    if (!name && !notify && !phone) continue;
+    const cleanName = name && (name.includes("@gmail") || name.toLowerCase() === "sadia") ? null : name;
+    const cleanNotify = notify && (notify.includes("@gmail") || notify.toLowerCase() === "sadia") ? null : notify;
+    stmts.push(
+      env.DB.prepare(
+        `UPDATE chats SET
+           name = COALESCE(?1, name),
+           notify_name = COALESCE(?2, notify_name),
+           phone = COALESCE(?3, phone)
+         WHERE chat_id = ?4 OR chat_id = ?5`
+      ).bind(cleanName, cleanNotify, phone, c.id, phone ? `${phone}@s.whatsapp.net` : c.id)
+    );
+  }
+  for (let i = 0; i < stmts.length; i += 50) {
+    const chunk = stmts.slice(i, i + 50);
+    if (chunk.length > 0) {
+      await env.DB.batch(chunk).catch(() => {
+      });
+    }
+  }
 }
 async function addUsage(env, neurons) {
   const day = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
@@ -265,15 +298,43 @@ async function handleIncoming(env, m) {
     return { action: "ignore", reason: `message marked as deleted by ${deletedBy}` };
   }
   const isOutgoing = m.fromMe && !m.isSelfChat;
-  const chatName = m.chatName ?? (isOutgoing ? null : m.senderName ?? null);
-  const { muted } = await upsertChat(env, m.chatId, chatName, m.isGroup);
+  const isOwnerIdentifier = (val) => {
+    if (!val) return false;
+    const lower = val.toLowerCase().trim();
+    if (lower.includes("@gmail") || lower.includes("@yahoo") || lower.includes("@hotmail")) return true;
+    if (s.ownerName && lower === s.ownerName.toLowerCase().trim()) return true;
+    return false;
+  };
+  let candidateChatName = null;
+  let candidateChatNotify = null;
+  const candidateChatPhone = m.chatPhone || (!m.isGroup && m.chatId.includes("@s.whatsapp.net") ? m.chatId.split("@")[0] : null);
+  if (!isOutgoing) {
+    candidateChatName = !isOwnerIdentifier(m.chatName) ? m.chatName ?? null : null;
+    candidateChatNotify = !isOwnerIdentifier(m.chatNotify) ? m.chatNotify ?? null : !isOwnerIdentifier(m.senderName) ? m.senderName ?? null : null;
+  } else {
+    if (m.chatName && !isOwnerIdentifier(m.chatName)) {
+      candidateChatName = m.chatName;
+    }
+    if (m.chatNotify && !isOwnerIdentifier(m.chatNotify)) {
+      candidateChatNotify = m.chatNotify;
+    }
+  }
+  const { muted } = await upsertChat(
+    env,
+    m.chatId,
+    candidateChatName,
+    candidateChatNotify,
+    candidateChatPhone,
+    m.isGroup
+  );
   const msgId = `wa:${m.chatId}:${m.id}`;
+  const senderDisplayName = isOutgoing ? s.ownerName || "You" : !isOwnerIdentifier(m.senderName) ? m.senderName : null;
   const isNew = await insertMessage(env, {
     id: msgId,
     chat_id: m.chatId,
     role: isOutgoing ? "assistant" : "user",
     sender: isOutgoing ? s.ownerName || "You" : m.senderPhone ?? null,
-    sender_name: isOutgoing ? s.ownerName || "You" : m.senderName ?? null,
+    sender_name: senderDisplayName,
     content: m.text,
     source: isOutgoing ? "whatsapp-device" : "whatsapp",
     created_at: m.timestamp ?? Date.now(),
@@ -427,6 +488,13 @@ async function gatewayRoutes(request, env, url) {
       if (!m?.id || !m?.chatId || typeof m.text !== "string") return json({ error: "Invalid message" }, 400);
       return json(await handleIncoming(env, m));
     }
+    case "POST /gw/contacts": {
+      const { contacts } = await request.json();
+      if (Array.isArray(contacts) && contacts.length > 0) {
+        await updateContacts(env, contacts);
+      }
+      return json({ ok: true, count: contacts?.length || 0 });
+    }
     case "POST /gw/status": {
       const body = await request.json();
       const prev = await kvGet(env, "gateway");
@@ -575,7 +643,7 @@ async function dashboardRoutes(request, env, url) {
     }
     case "GET /api/chats": {
       const { results } = await env.DB.prepare(
-        `SELECT c.chat_id, c.name, c.is_group, c.muted, c.last_at,
+        `SELECT c.chat_id, c.name, c.notify_name, c.phone, c.is_group, c.muted, c.last_at,
                 (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.chat_id) AS message_count
          FROM chats c ORDER BY c.last_at DESC LIMIT 100`
       ).all();

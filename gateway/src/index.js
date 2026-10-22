@@ -45,6 +45,7 @@ let restartTimer = null;
 const sentIds = new Set(); // ids of messages Lady Jane sent, so she never answers herself
 const replyLog = new Map(); // chatJid -> timestamps of recent replies
 const groupNames = new Map();
+const contactStore = new Map(); // jid -> contact name / pushName
 
 // ─── Connection ──────────────────────────────────────────────────────────────
 
@@ -130,27 +131,11 @@ async function start() {
   });
 
   sock.ev.on("contacts.upsert", (contacts) => {
-    for (const c of contacts) {
-      if (c && isMe(c.id)) {
-        const contactName = c.notify || c.name || c.verifiedName;
-        if (contactName && contactName !== me.name) {
-          me.name = contactName;
-          sendStatus();
-        }
-      }
-    }
+    handleContacts(contacts);
   });
 
   sock.ev.on("contacts.update", (updates) => {
-    for (const c of updates) {
-      if (c && isMe(c.id)) {
-        const contactName = c.notify || c.name || c.verifiedName;
-        if (contactName && contactName !== me.name) {
-          me.name = contactName;
-          sendStatus();
-        }
-      }
-    }
+    handleContacts(updates);
   });
 
   sock.ev.on("messages.upsert", ({ messages, type }) => {
@@ -284,9 +269,89 @@ const isMe = (jid) => {
   return Boolean(p && myP && p === myP);
 };
 const phoneOf = (...jids) => {
-  const pn = jids.find((j) => j && isPnUser(j));
-  return pn ? jidDecode(pn)?.user ?? null : null;
+  for (const j of jids) {
+    if (!j) continue;
+    if (isPnUser(j)) {
+      const decoded = jidDecode(j)?.user;
+      if (decoded) return decoded;
+    }
+    const clean = String(j).split("@")[0].replace(/[^0-9]/g, "");
+    if (clean && clean.length >= 7 && clean.length <= 15 && !clean.includes("lid")) {
+      return clean;
+    }
+  }
+  return null;
 };
+
+let contactSyncTimer = null;
+const pendingContacts = new Map();
+
+function recordContact(c) {
+  if (!c || !c.id) return;
+  if (isMe(c.id)) {
+    const myName = c.notify || c.name || c.verifiedName;
+    if (myName && myName !== me.name) {
+      me.name = myName;
+      sendStatus().catch(() => {});
+    }
+    return;
+  }
+
+  const id = jidNormalizedUser(c.id);
+  const p = phoneOf(c.id);
+  const prev = contactStore.get(id) || {};
+  const name = c.name || prev.name || null;
+  const notify = c.notify || prev.notify || c.verifiedName || null;
+  const phone = p || prev.phone || null;
+  const entry = { name, notify, phone };
+
+  contactStore.set(id, entry);
+  if (phone) {
+    contactStore.set(`${phone}@s.whatsapp.net`, entry);
+  }
+
+  if (name || notify || phone) {
+    pendingContacts.set(id, { id, name, notify, phone });
+  }
+}
+
+function scheduleContactSync() {
+  if (contactSyncTimer) return;
+  contactSyncTimer = setTimeout(async () => {
+    contactSyncTimer = null;
+    if (pendingContacts.size === 0) return;
+    const batch = Array.from(pendingContacts.values()).slice(0, 100);
+    for (const b of batch) pendingContacts.delete(b.id);
+    log.info({ count: batch.length }, "Syncing contacts to Lady Jane brain...");
+    await brain("POST", "/gw/contacts", { json: { contacts: batch } }).catch((err) =>
+      log.warn({ err: String(err) }, "Failed to sync contacts batch")
+    );
+    if (pendingContacts.size > 0) scheduleContactSync();
+  }, 3000);
+}
+
+function handleContacts(contacts) {
+  if (!Array.isArray(contacts)) return;
+  for (const c of contacts) {
+    recordContact(c);
+  }
+  scheduleContactSync();
+}
+
+function getContactInfo(jid, altJid) {
+  const norm = jidNormalizedUser(jid);
+  const alt = altJid ? jidNormalizedUser(altJid) : null;
+  const p = phoneOf(jid, altJid);
+  const byPhone = p ? contactStore.get(`${p}@s.whatsapp.net`) : null;
+  const byId = contactStore.get(norm);
+  const byAlt = alt ? contactStore.get(alt) : null;
+  const entry = byId || byAlt || byPhone || {};
+  return {
+    name: entry.name || null,
+    notify: entry.notify || null,
+    phone: p || entry.phone || null,
+  };
+}
 
 async function groupName(jid) {
   if (groupNames.has(jid)) return groupNames.get(jid);
@@ -392,25 +457,58 @@ async function onMessage(msg) {
   }
   if (!text && !mediaInfo) return;
 
-  if (key.fromMe && msg.pushName && (!me.name || me.name !== msg.pushName)) {
+  const isOutgoing = Boolean(key.fromMe);
+
+  // If incoming message from contact, record sender's WhatsApp username (pushName):
+  if (!isOutgoing && msg.pushName) {
+    const id = jidNormalizedUser(chatJid);
+    const p = phoneOf(chatJid, key.remoteJidAlt);
+    const prev = contactStore.get(id) || {};
+    const entry = {
+      name: prev.name || null,
+      notify: msg.pushName,
+      phone: p || prev.phone || null,
+    };
+    contactStore.set(id, entry);
+    if (p) contactStore.set(`${p}@s.whatsapp.net`, entry);
+    pendingContacts.set(id, { id, name: prev.name || null, notify: msg.pushName, phone: p });
+    scheduleContactSync();
+  }
+
+  // If outgoing message from user's phone, update me.name
+  if (isOutgoing && msg.pushName && (!me.name || me.name !== msg.pushName)) {
     me.name = msg.pushName;
     sendStatus().catch(() => {});
   }
+
   const ctx = contextInfoOf(msg.message);
   const mentioned = isGroup && (
     (ctx?.mentionedJid || []).some(isMe) ||
     isMe(ctx?.participant) // replying to one of Lady Jane's messages
   );
 
+  const contactInfo = !isGroup ? getContactInfo(chatJid, key.remoteJidAlt) : null;
+  const chatName = isGroup
+    ? await groupName(chatJid)
+    : (contactInfo?.name || (!isOutgoing ? msg.pushName : null) || contactInfo?.notify || null);
+  const chatNotify = isGroup
+    ? null
+    : ((!isOutgoing ? msg.pushName : null) || contactInfo?.notify || null);
+  const chatPhone = isGroup
+    ? null
+    : (phoneOf(chatJid, key.remoteJidAlt) || contactInfo?.phone || null);
+
   const payload = {
     id: key.id,
     chatId: isGroup ? chatJid : jidNormalizedUser(isPnUser(chatJid) ? chatJid : key.remoteJidAlt || chatJid),
-    chatName: isGroup ? await groupName(chatJid) : msg.pushName || null,
+    chatName,
+    chatNotify,
+    chatPhone,
     isGroup,
     isSelfChat,
-    fromMe: !!key.fromMe,
+    fromMe: isOutgoing,
     senderPhone: isGroup ? phoneOf(key.participant, key.participantAlt) : phoneOf(chatJid, key.remoteJidAlt),
-    senderName: key.fromMe ? me.name : msg.pushName || null,
+    senderName: isOutgoing ? me.name : (contactInfo?.name || msg.pushName || contactInfo?.notify || null),
     text: (text || "").slice(0, 4000),
     mentioned,
     timestamp: sentAt || Date.now(),

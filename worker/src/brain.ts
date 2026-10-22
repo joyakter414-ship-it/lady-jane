@@ -9,6 +9,8 @@ export interface IncomingMessage {
   id: string;
   chatId: string;
   chatName?: string | null;
+  chatNotify?: string | null;
+  chatPhone?: string | null;
   isGroup: boolean;
   /** The owner's own "Message yourself" chat. */
   isSelfChat: boolean;
@@ -75,20 +77,58 @@ export async function handleIncoming(env: AppEnv, m: IncomingMessage): Promise<D
   }
 
   const isOutgoing = m.fromMe && !m.isSelfChat;
-  const chatName = m.chatName ?? (isOutgoing ? null : m.senderName ?? null);
+
+  const isOwnerIdentifier = (val: string | null | undefined): boolean => {
+    if (!val) return false;
+    const lower = val.toLowerCase().trim();
+    if (lower.includes("@gmail") || lower.includes("@yahoo") || lower.includes("@hotmail")) return true;
+    if (s.ownerName && lower === s.ownerName.toLowerCase().trim()) return true;
+    return false;
+  };
+
+  let candidateChatName: string | null = null;
+  let candidateChatNotify: string | null = null;
+  const candidateChatPhone: string | null =
+    m.chatPhone || (!m.isGroup && m.chatId.includes("@s.whatsapp.net") ? m.chatId.split("@")[0] : null);
+
+  if (!isOutgoing) {
+    candidateChatName = !isOwnerIdentifier(m.chatName) ? m.chatName ?? null : null;
+    candidateChatNotify = !isOwnerIdentifier(m.chatNotify)
+      ? m.chatNotify ?? null
+      : (!isOwnerIdentifier(m.senderName) ? m.senderName ?? null : null);
+  } else {
+    // If outgoing message from user's phone, only accept chatName/chatNotify if it was resolved from contact store and is NOT owner's name/email
+    if (m.chatName && !isOwnerIdentifier(m.chatName)) {
+      candidateChatName = m.chatName;
+    }
+    if (m.chatNotify && !isOwnerIdentifier(m.chatNotify)) {
+      candidateChatNotify = m.chatNotify;
+    }
+  }
 
   // 1. ALWAYS track the chat in DB so Conversations list has 100% real-time sync
-  const { muted } = await upsertChat(env, m.chatId, chatName, m.isGroup);
+  const { muted } = await upsertChat(
+    env,
+    m.chatId,
+    candidateChatName,
+    candidateChatNotify,
+    candidateChatPhone,
+    m.isGroup
+  );
 
   // 2. ALWAYS insert the message in DB so Conversations tab displays ALL WhatsApp activity
   // (both incoming received messages AND outgoing messages sent from other devices!)
   const msgId = `wa:${m.chatId}:${m.id}`;
+  const senderDisplayName = isOutgoing
+    ? (s.ownerName || "You")
+    : (!isOwnerIdentifier(m.senderName) ? m.senderName : null);
+
   const isNew = await insertMessage(env, {
     id: msgId,
     chat_id: m.chatId,
     role: isOutgoing ? "assistant" : "user",
     sender: isOutgoing ? (s.ownerName || "You") : (m.senderPhone ?? null),
-    sender_name: isOutgoing ? (s.ownerName || "You") : (m.senderName ?? null),
+    sender_name: senderDisplayName,
     content: m.text,
     source: isOutgoing ? "whatsapp-device" : "whatsapp",
     created_at: m.timestamp ?? Date.now(),
