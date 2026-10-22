@@ -35,12 +35,13 @@ async function insertMessage(env, m) {
   return (res.meta.changes ?? 0) > 0;
 }
 async function markMessageDeleted(env, chatId, targetId, deletedBy, deletedAt) {
-  const fullId = targetId.startsWith("wa:") ? targetId : `wa:${chatId}:${targetId}`;
+  const cleanTargetId = targetId.includes(":") ? targetId.split(":").pop() : targetId;
+  const fullId = `wa:${chatId}:${cleanTargetId}`;
   const res = await env.DB.prepare(
     `UPDATE messages 
-     SET deleted_at = ?, deleted_by = ?
-     WHERE (id = ? OR id = ?) AND (deleted_at IS NULL OR deleted_at = 0)`
-  ).bind(deletedAt, deletedBy, fullId, targetId).run();
+     SET deleted_at = ?1, deleted_by = ?2
+     WHERE (id = ?3 OR id = ?4 OR id LIKE '%:' || ?5) AND (deleted_at IS NULL OR deleted_at = 0)`
+  ).bind(deletedAt, deletedBy, fullId, targetId, cleanTargetId).run();
   return (res.meta.changes ?? 0) > 0;
 }
 async function cleanupOldMedia(env, days = 10) {
@@ -291,10 +292,20 @@ function shouldAnswer(s, m) {
 }
 async function handleIncoming(env, m) {
   const s = await getSettings(env);
+  let canonicalChatId = m.chatId;
+  if (canonicalChatId.endsWith("@lid")) {
+    if (m.chatPhone) {
+      canonicalChatId = `${m.chatPhone.replace(/\D/g, "")}@s.whatsapp.net`;
+    } else if (canonicalChatId.includes("138500078878823")) {
+      canonicalChatId = "8801922525075@s.whatsapp.net";
+    } else if (canonicalChatId.includes("241759615455335")) {
+      canonicalChatId = "8801616504049@s.whatsapp.net";
+    }
+  }
   if (m.isRevoke && m.revokedMsgId) {
     const deletedBy = m.revokedBy || (m.fromMe ? "you" : "sender");
     const deletedAt = m.timestamp ?? Date.now();
-    await markMessageDeleted(env, m.chatId, m.revokedMsgId, deletedBy, deletedAt);
+    await markMessageDeleted(env, canonicalChatId, m.revokedMsgId, deletedBy, deletedAt);
     return { action: "ignore", reason: `message marked as deleted by ${deletedBy}` };
   }
   const isOutgoing = m.fromMe && !m.isSelfChat;
@@ -317,16 +328,6 @@ async function handleIncoming(env, m) {
     }
     if (m.chatNotify && !isOwnerIdentifier(m.chatNotify)) {
       candidateChatNotify = m.chatNotify;
-    }
-  }
-  let canonicalChatId = m.chatId;
-  if (canonicalChatId.endsWith("@lid")) {
-    if (m.chatPhone) {
-      canonicalChatId = `${m.chatPhone.replace(/\D/g, "")}@s.whatsapp.net`;
-    } else if (canonicalChatId.includes("138500078878823")) {
-      canonicalChatId = "8801922525075@s.whatsapp.net";
-    } else if (canonicalChatId.includes("241759615455335")) {
-      canonicalChatId = "8801616504049@s.whatsapp.net";
     }
   }
   const { muted } = await upsertChat(

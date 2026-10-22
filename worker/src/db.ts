@@ -75,13 +75,14 @@ export async function markMessageDeleted(
   deletedBy: string,
   deletedAt: number
 ): Promise<boolean> {
-  const fullId = targetId.startsWith("wa:") ? targetId : `wa:${chatId}:${targetId}`;
+  const cleanTargetId = targetId.includes(":") ? targetId.split(":").pop()! : targetId;
+  const fullId = `wa:${chatId}:${cleanTargetId}`;
   const res = await env.DB.prepare(
     `UPDATE messages 
-     SET deleted_at = ?, deleted_by = ?
-     WHERE (id = ? OR id = ?) AND (deleted_at IS NULL OR deleted_at = 0)`
+     SET deleted_at = ?1, deleted_by = ?2
+     WHERE (id = ?3 OR id = ?4 OR id LIKE '%:' || ?5) AND (deleted_at IS NULL OR deleted_at = 0)`
   )
-    .bind(deletedAt, deletedBy, fullId, targetId)
+    .bind(deletedAt, deletedBy, fullId, targetId, cleanTargetId)
     .run();
   return (res.meta.changes ?? 0) > 0;
 }

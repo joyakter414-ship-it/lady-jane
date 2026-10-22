@@ -68,11 +68,23 @@ export function shouldAnswer(s: Settings, m: IncomingMessage): { ok: true } | { 
 export async function handleIncoming(env: AppEnv, m: IncomingMessage): Promise<Decision> {
   const s = await getSettings(env);
 
+  // Canonicalize any remaining LID chatId if phone is available or known
+  let canonicalChatId = m.chatId;
+  if (canonicalChatId.endsWith("@lid")) {
+    if (m.chatPhone) {
+      canonicalChatId = `${m.chatPhone.replace(/\D/g, "")}@s.whatsapp.net`;
+    } else if (canonicalChatId.includes("138500078878823")) {
+      canonicalChatId = "8801922525075@s.whatsapp.net";
+    } else if (canonicalChatId.includes("241759615455335")) {
+      canonicalChatId = "8801616504049@s.whatsapp.net";
+    }
+  }
+
   // If this is an unsend/revoke notification, mark original message as deleted without destroying the content!
   if (m.isRevoke && m.revokedMsgId) {
     const deletedBy = m.revokedBy || (m.fromMe ? "you" : "sender");
     const deletedAt = m.timestamp ?? Date.now();
-    await markMessageDeleted(env, m.chatId, m.revokedMsgId, deletedBy, deletedAt);
+    await markMessageDeleted(env, canonicalChatId, m.revokedMsgId, deletedBy, deletedAt);
     return { action: "ignore", reason: `message marked as deleted by ${deletedBy}` };
   }
 
@@ -103,18 +115,6 @@ export async function handleIncoming(env: AppEnv, m: IncomingMessage): Promise<D
     }
     if (m.chatNotify && !isOwnerIdentifier(m.chatNotify)) {
       candidateChatNotify = m.chatNotify;
-    }
-  }
-
-  // Canonicalize any remaining LID chatId if phone is available or known
-  let canonicalChatId = m.chatId;
-  if (canonicalChatId.endsWith("@lid")) {
-    if (m.chatPhone) {
-      canonicalChatId = `${m.chatPhone.replace(/\D/g, "")}@s.whatsapp.net`;
-    } else if (canonicalChatId.includes("138500078878823")) {
-      canonicalChatId = "8801922525075@s.whatsapp.net";
-    } else if (canonicalChatId.includes("241759615455335")) {
-      canonicalChatId = "8801616504049@s.whatsapp.net";
     }
   }
 
