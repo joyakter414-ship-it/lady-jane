@@ -1,5 +1,15 @@
 import type { AppEnv } from "./env";
-import { addUsage, getEnabledRules, insertMessage, markMessageDeleted, recentMessages, upsertChat, type Rule } from "./db";
+import {
+  addUsage,
+  getEnabledRules,
+  insertMessage,
+  markMessageDeleted,
+  updateMessageContent,
+  updateMessageReaction,
+  recentMessages,
+  upsertChat,
+  type Rule,
+} from "./db";
 import { buildSystemPrompt } from "./persona";
 import { getProvider, type ChatMessage } from "./providers";
 import { getSettings, type Settings } from "./settings";
@@ -27,6 +37,14 @@ export interface IncomingMessage {
   isRevoke?: boolean;
   revokedMsgId?: string | null;
   revokedBy?: string | null;
+  isReaction?: boolean;
+  targetId?: string | null;
+  emoji?: string | null;
+  isEdit?: boolean;
+  editedMsgId?: string | null;
+  quotedId?: string | null;
+  quotedText?: string | null;
+  quotedSender?: string | null;
 }
 
 export type Decision =
@@ -88,6 +106,25 @@ export async function handleIncoming(env: AppEnv, m: IncomingMessage): Promise<D
     return { action: "ignore", reason: `message marked as deleted by ${deletedBy}` };
   }
 
+  // If this is a message reaction (emoji reaction or removal)
+  if (m.isReaction && m.targetId) {
+    const sender = m.fromMe ? (s.ownerName || "You") : (m.senderName || m.senderPhone || "Contact");
+    await updateMessageReaction(env, canonicalChatId, m.targetId, {
+      emoji: m.emoji || "",
+      sender,
+      fromMe: m.fromMe,
+      at: m.timestamp || Date.now(),
+    });
+    return { action: "ignore", reason: `reaction ${m.emoji ? `added: ${m.emoji}` : "removed"}` };
+  }
+
+  // If this is a message edit, update the content and record edit history!
+  if (m.isEdit && m.editedMsgId) {
+    const editedAt = m.timestamp || Date.now();
+    await updateMessageContent(env, canonicalChatId, m.editedMsgId, m.text, editedAt);
+    return { action: "ignore", reason: "message edit saved with history" };
+  }
+
   const isOutgoing = m.fromMe && !m.isSelfChat;
 
   const isOwnerIdentifier = (val: string | null | undefined): boolean => {
@@ -147,6 +184,9 @@ export async function handleIncoming(env: AppEnv, m: IncomingMessage): Promise<D
     media_type: m.mediaType ?? null,
     media_url: m.mediaUrl ?? null,
     media_mime: m.mediaMime ?? null,
+    quoted_id: m.quotedId ?? null,
+    quoted_text: m.quotedText ?? null,
+    quoted_sender: m.quotedSender ?? null,
   });
   if (!isNew) return { action: "ignore", reason: "duplicate delivery" };
 

@@ -13,8 +13,13 @@ async function kvDelete(env, key) {
 }
 async function insertMessage(env, m) {
   const res = await env.DB.prepare(
-    `INSERT OR IGNORE INTO messages (id, chat_id, role, sender, sender_name, content, source, model, neurons, created_at, media_type, media_url, media_mime, deleted_at, deleted_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT OR IGNORE INTO messages (
+       id, chat_id, role, sender, sender_name, content, source,
+       model, neurons, created_at, media_type, media_url, media_mime,
+       deleted_at, deleted_by, reactions, quoted_id, quoted_text, quoted_sender,
+       edited_at, edit_history
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).bind(
     m.id,
     m.chat_id,
@@ -30,8 +35,62 @@ async function insertMessage(env, m) {
     m.media_url ?? null,
     m.media_mime ?? null,
     m.deleted_at ?? 0,
-    m.deleted_by ?? null
+    m.deleted_by ?? null,
+    m.reactions ?? "[]",
+    m.quoted_id ?? null,
+    m.quoted_text ?? null,
+    m.quoted_sender ?? null,
+    m.edited_at ?? 0,
+    m.edit_history ?? "[]"
   ).run();
+  return (res.meta.changes ?? 0) > 0;
+}
+async function updateMessageReaction(env, chatId, targetId, reaction) {
+  const cleanTargetId = targetId.includes(":") ? targetId.split(":").pop() : targetId;
+  const row = await env.DB.prepare(
+    `SELECT id, reactions FROM messages 
+     WHERE (id = ?1 OR id = ?2 OR id LIKE '%:' || ?3)`
+  ).bind(`wa:${chatId}:${cleanTargetId}`, targetId, cleanTargetId).first();
+  if (!row) return;
+  let list = [];
+  try {
+    list = row.reactions ? JSON.parse(row.reactions) : [];
+  } catch {
+    list = [];
+  }
+  list = list.filter((r) => r.fromMe !== reaction.fromMe);
+  if (reaction.emoji && reaction.emoji.trim()) {
+    list.push({
+      emoji: reaction.emoji.trim(),
+      sender: reaction.sender,
+      fromMe: reaction.fromMe,
+      at: reaction.at || Date.now()
+    });
+  }
+  await env.DB.prepare("UPDATE messages SET reactions = ? WHERE id = ?").bind(JSON.stringify(list), row.id).run();
+}
+async function updateMessageContent(env, chatId, targetId, newContent, editedAt) {
+  const cleanTargetId = targetId.includes(":") ? targetId.split(":").pop() : targetId;
+  const row = await env.DB.prepare(
+    `SELECT id, content, edit_history FROM messages 
+     WHERE (id = ?1 OR id = ?2 OR id LIKE '%:' || ?3)`
+  ).bind(`wa:${chatId}:${cleanTargetId}`, targetId, cleanTargetId).first();
+  if (!row) return false;
+  let history = [];
+  try {
+    history = row.edit_history ? JSON.parse(row.edit_history) : [];
+  } catch {
+    history = [];
+  }
+  history.push({
+    text: row.content,
+    edited_at: editedAt || Date.now()
+  });
+  const res = await env.DB.prepare(
+    `UPDATE messages 
+     SET content = ?1, edited_at = ?2, edit_history = ?3
+     WHERE id = ?4`
+  ).bind(newContent, editedAt || Date.now(), JSON.stringify(history), row.id).run();
   return (res.meta.changes ?? 0) > 0;
 }
 async function markMessageDeleted(env, chatId, targetId, deletedBy, deletedAt) {
@@ -308,6 +367,21 @@ async function handleIncoming(env, m) {
     await markMessageDeleted(env, canonicalChatId, m.revokedMsgId, deletedBy, deletedAt);
     return { action: "ignore", reason: `message marked as deleted by ${deletedBy}` };
   }
+  if (m.isReaction && m.targetId) {
+    const sender = m.fromMe ? s.ownerName || "You" : m.senderName || m.senderPhone || "Contact";
+    await updateMessageReaction(env, canonicalChatId, m.targetId, {
+      emoji: m.emoji || "",
+      sender,
+      fromMe: m.fromMe,
+      at: m.timestamp || Date.now()
+    });
+    return { action: "ignore", reason: `reaction ${m.emoji ? `added: ${m.emoji}` : "removed"}` };
+  }
+  if (m.isEdit && m.editedMsgId) {
+    const editedAt = m.timestamp || Date.now();
+    await updateMessageContent(env, canonicalChatId, m.editedMsgId, m.text, editedAt);
+    return { action: "ignore", reason: "message edit saved with history" };
+  }
   const isOutgoing = m.fromMe && !m.isSelfChat;
   const isOwnerIdentifier = (val) => {
     if (!val) return false;
@@ -351,7 +425,10 @@ async function handleIncoming(env, m) {
     created_at: m.timestamp ?? Date.now(),
     media_type: m.mediaType ?? null,
     media_url: m.mediaUrl ?? null,
-    media_mime: m.mediaMime ?? null
+    media_mime: m.mediaMime ?? null,
+    quoted_id: m.quotedId ?? null,
+    quoted_text: m.quotedText ?? null,
+    quoted_sender: m.quotedSender ?? null
   });
   if (!isNew) return { action: "ignore", reason: "duplicate delivery" };
   if (isOutgoing) {

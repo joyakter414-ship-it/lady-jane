@@ -33,6 +33,12 @@ export interface StoredMessage {
   media_mime?: string | null;
   deleted_at?: number | null;
   deleted_by?: string | null;
+  reactions?: string | null;
+  quoted_id?: string | null;
+  quoted_text?: string | null;
+  quoted_sender?: string | null;
+  edited_at?: number | null;
+  edit_history?: string | null;
 }
 
 /**
@@ -41,8 +47,13 @@ export interface StoredMessage {
  */
 export async function insertMessage(env: AppEnv, m: Omit<StoredMessage, "model" | "neurons"> & Partial<StoredMessage>): Promise<boolean> {
   const res = await env.DB.prepare(
-    `INSERT OR IGNORE INTO messages (id, chat_id, role, sender, sender_name, content, source, model, neurons, created_at, media_type, media_url, media_mime, deleted_at, deleted_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT OR IGNORE INTO messages (
+       id, chat_id, role, sender, sender_name, content, source,
+       model, neurons, created_at, media_type, media_url, media_mime,
+       deleted_at, deleted_by, reactions, quoted_id, quoted_text, quoted_sender,
+       edited_at, edit_history
+     )
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
     .bind(
       m.id,
@@ -59,9 +70,104 @@ export async function insertMessage(env: AppEnv, m: Omit<StoredMessage, "model" 
       m.media_url ?? null,
       m.media_mime ?? null,
       m.deleted_at ?? 0,
-      m.deleted_by ?? null
+      m.deleted_by ?? null,
+      m.reactions ?? "[]",
+      m.quoted_id ?? null,
+      m.quoted_text ?? null,
+      m.quoted_sender ?? null,
+      m.edited_at ?? 0,
+      m.edit_history ?? "[]"
     )
     .run();
+  return (res.meta.changes ?? 0) > 0;
+}
+
+export interface ReactionItem {
+  emoji: string;
+  sender: string;
+  fromMe: boolean;
+  at?: number;
+}
+
+export async function updateMessageReaction(
+  env: AppEnv,
+  chatId: string,
+  targetId: string,
+  reaction: ReactionItem
+): Promise<void> {
+  const cleanTargetId = targetId.includes(":") ? targetId.split(":").pop()! : targetId;
+  const row = await env.DB.prepare(
+    `SELECT id, reactions FROM messages 
+     WHERE (id = ?1 OR id = ?2 OR id LIKE '%:' || ?3)`
+  )
+    .bind(`wa:${chatId}:${cleanTargetId}`, targetId, cleanTargetId)
+    .first<{ id: string; reactions: string }>();
+
+  if (!row) return;
+
+  let list: ReactionItem[] = [];
+  try {
+    list = row.reactions ? JSON.parse(row.reactions) : [];
+  } catch {
+    list = [];
+  }
+
+  // Remove prior reaction by this sender perspective
+  list = list.filter((r) => r.fromMe !== reaction.fromMe);
+
+  // If emoji is not empty, add it
+  if (reaction.emoji && reaction.emoji.trim()) {
+    list.push({
+      emoji: reaction.emoji.trim(),
+      sender: reaction.sender,
+      fromMe: reaction.fromMe,
+      at: reaction.at || Date.now(),
+    });
+  }
+
+  await env.DB.prepare("UPDATE messages SET reactions = ? WHERE id = ?")
+    .bind(JSON.stringify(list), row.id)
+    .run();
+}
+
+export async function updateMessageContent(
+  env: AppEnv,
+  chatId: string,
+  targetId: string,
+  newContent: string,
+  editedAt: number
+): Promise<boolean> {
+  const cleanTargetId = targetId.includes(":") ? targetId.split(":").pop()! : targetId;
+  const row = await env.DB.prepare(
+    `SELECT id, content, edit_history FROM messages 
+     WHERE (id = ?1 OR id = ?2 OR id LIKE '%:' || ?3)`
+  )
+    .bind(`wa:${chatId}:${cleanTargetId}`, targetId, cleanTargetId)
+    .first<{ id: string; content: string; edit_history: string }>();
+
+  if (!row) return false;
+
+  let history: Array<{ text: string; edited_at: number }> = [];
+  try {
+    history = row.edit_history ? JSON.parse(row.edit_history) : [];
+  } catch {
+    history = [];
+  }
+
+  // Preserve the previous content in edit_history!
+  history.push({
+    text: row.content,
+    edited_at: editedAt || Date.now(),
+  });
+
+  const res = await env.DB.prepare(
+    `UPDATE messages 
+     SET content = ?1, edited_at = ?2, edit_history = ?3
+     WHERE id = ?4`
+  )
+    .bind(newContent, editedAt || Date.now(), JSON.stringify(history), row.id)
+    .run();
+
   return (res.meta.changes ?? 0) > 0;
 }
 

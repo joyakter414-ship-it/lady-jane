@@ -146,6 +146,42 @@ async function start() {
     }
   });
 
+  sock.ev.on("messages.reaction", async (reactions) => {
+    for (const r of reactions) {
+      try {
+        const targetKey = r.reaction?.key || r.key;
+        const targetId = targetKey?.id;
+        const targetChat = targetKey?.remoteJid || r.key?.remoteJid;
+        const emoji = r.reaction?.text ?? "";
+        const fromMe = Boolean(r.key?.fromMe);
+        if (!targetId || !targetChat) continue;
+
+        const rawChat = jidNormalizedUser(targetChat);
+        const isGroup = isJidGroup(rawChat);
+        const canonicalChatId = isGroup ? rawChat : resolveCanonicalChatId(rawChat, targetKey?.remoteJidAlt);
+
+        log.info({ targetId, canonicalChatId, emoji, fromMe }, "💬 Reaction received via messages.reaction");
+        await brain("POST", "/gw/message", {
+          json: {
+            id: `react_${targetId}_${Date.now()}`,
+            chatId: canonicalChatId,
+            isGroup,
+            isSelfChat: false,
+            fromMe,
+            senderName: fromMe ? me.name : null,
+            text: emoji,
+            isReaction: true,
+            targetId,
+            emoji,
+            timestamp: Number(r.reaction?.senderTimestampMs) || Date.now(),
+          },
+        }).catch((err) => log.error({ err: String(err) }, "Failed to report reaction"));
+      } catch (err) {
+        log.error({ err: String(err) }, "Error handling messages.reaction");
+      }
+    }
+  });
+
   sock.ev.on("messages.update", async (updates) => {
     for (const update of updates) {
       const isRevoke =
@@ -172,6 +208,34 @@ async function start() {
               timestamp: Date.now(),
             },
           }).catch((err) => log.error({ err: String(err) }, "Failed to report revoke"));
+        }
+      }
+
+      // Check for message edit inside messages.update
+      const editedMsg = update.update?.message?.editedMessage?.message || update.update?.message?.editedMessage;
+      if (editedMsg) {
+        const targetId = update.key?.id;
+        const targetChat = update.key?.remoteJid;
+        const fromMe = Boolean(update.key?.fromMe);
+        const newText = extractText(editedMsg);
+        if (targetId && targetChat && newText) {
+          const rawChat = jidNormalizedUser(targetChat);
+          const isGroup = isJidGroup(rawChat);
+          const canonicalTargetChat = isGroup ? rawChat : resolveCanonicalChatId(rawChat, update.key?.remoteJidAlt);
+          log.info({ targetId, canonicalTargetChat, fromMe, newText }, "✏️ messages.update EDIT detected! Updating in DB.");
+          await brain("POST", "/gw/message", {
+            json: {
+              id: `edit_${targetId}_${Date.now()}`,
+              chatId: canonicalTargetChat,
+              isGroup,
+              isSelfChat: false,
+              fromMe,
+              text: newText,
+              isEdit: true,
+              editedMsgId: targetId,
+              timestamp: Date.now(),
+            },
+          }).catch((err) => log.error({ err: String(err) }, "Failed to report message edit"));
         }
       }
     }
@@ -443,8 +507,7 @@ async function onMessage(msg) {
   if (
     protocolMsg &&
     (protocolMsg.type === proto.Message.ProtocolMessage.Type.REVOKE ||
-      protocolMsg.type === 0 ||
-      protocolMsg.type === 14)
+      protocolMsg.type === 0)
   ) {
     const targetId = protocolMsg.key?.id;
     const targetChat = protocolMsg.key?.remoteJid || chatJid;
@@ -470,6 +533,70 @@ async function onMessage(msg) {
           timestamp: sentAt || Date.now(),
         },
       }).catch((err) => log.error({ err: String(err) }, "Failed to report protocol revoke"));
+      return;
+    }
+  }
+
+  // 1b. Check for protocol message edit:
+  if (
+    protocolMsg &&
+    (protocolMsg.type === proto.Message.ProtocolMessage.Type.MESSAGE_EDIT ||
+      protocolMsg.type === 14 ||
+      protocolMsg.editedMessage)
+  ) {
+    const targetId = protocolMsg.key?.id;
+    const targetChat = protocolMsg.key?.remoteJid || chatJid;
+    const targetFromMe = Boolean(protocolMsg.key?.fromMe);
+    const newText = extractText(protocolMsg.editedMessage);
+    if (targetId && newText) {
+      const canonicalTargetChat = isJidGroup(targetChat)
+        ? jidNormalizedUser(targetChat)
+        : resolveCanonicalChatId(jidNormalizedUser(targetChat), protocolMsg.key?.remoteJidAlt);
+      log.info({ targetId, targetChat, targetFromMe, newText }, "✏️ Protocol message edit detected! Updating in DB.");
+      await brain("POST", "/gw/message", {
+        json: {
+          id: `edit_${targetId}_${Date.now()}`,
+          chatId: canonicalTargetChat,
+          isGroup: isJidGroup(targetChat),
+          isSelfChat: !isJidGroup(targetChat) && (isMe(targetChat) || isMe(key.remoteJidAlt)),
+          fromMe: targetFromMe,
+          text: newText,
+          isEdit: true,
+          editedMsgId: targetId,
+          timestamp: sentAt || Date.now(),
+        },
+      }).catch((err) => log.error({ err: String(err) }, "Failed to report protocol edit"));
+      return;
+    }
+  }
+
+  // 1c. Check for reaction message inside upsert:
+  if (mContent?.reactionMessage) {
+    const rMsg = mContent.reactionMessage;
+    const targetId = rMsg.key?.id;
+    const targetChat = rMsg.key?.remoteJid || chatJid;
+    const emoji = rMsg.text ?? "";
+    const fromMe = Boolean(key.fromMe);
+    if (targetId) {
+      const canonicalTargetChat = isJidGroup(targetChat)
+        ? jidNormalizedUser(targetChat)
+        : resolveCanonicalChatId(jidNormalizedUser(targetChat), rMsg.key?.remoteJidAlt);
+      log.info({ targetId, canonicalTargetChat, emoji, fromMe }, "💬 Reaction received via reactionMessage in upsert");
+      await brain("POST", "/gw/message", {
+        json: {
+          id: `react_${targetId}_${Date.now()}`,
+          chatId: canonicalTargetChat,
+          isGroup: isJidGroup(targetChat),
+          isSelfChat: false,
+          fromMe,
+          senderName: fromMe ? me.name : msg.pushName || null,
+          text: emoji,
+          isReaction: true,
+          targetId,
+          emoji,
+          timestamp: sentAt || Date.now(),
+        },
+      }).catch((err) => log.error({ err: String(err) }, "Failed to report reaction"));
       return;
     }
   }
@@ -539,6 +666,27 @@ async function onMessage(msg) {
     isMe(ctx?.participant) // replying to one of Lady Jane's messages
   );
 
+  let quotedId = null;
+  let quotedText = null;
+  let quotedSender = null;
+  if (ctx?.stanzaId && (ctx.quotedMessage || ctx.quotedText)) {
+    quotedId = ctx.stanzaId;
+    quotedText = extractText(ctx.quotedMessage) || ctx.quotedText || (detectMedia(ctx.quotedMessage)?.caption) || null;
+    if (!quotedText && ctx.quotedMessage) {
+      const qMedia = detectMedia(ctx.quotedMessage);
+      if (qMedia) quotedText = `[${qMedia.type.toUpperCase()}]`;
+    }
+    const qParticipant = ctx.participant;
+    if (qParticipant) {
+      if (isMe(qParticipant)) {
+        quotedSender = me.name || "You";
+      } else {
+        const qInfo = getContactInfo(qParticipant);
+        quotedSender = qInfo?.name || qInfo?.notify || phoneOf(qParticipant) || "Contact";
+      }
+    }
+  }
+
   const contactInfo = !isGroup ? getContactInfo(canonicalChatId, rawChatJid, key.remoteJidAlt) : null;
   const chatName = isGroup
     ? await groupName(canonicalChatId)
@@ -567,6 +715,9 @@ async function onMessage(msg) {
     mediaType,
     mediaUrl,
     mediaMime,
+    quotedId,
+    quotedText,
+    quotedSender,
   };
 
   const decision = await brain("POST", "/gw/message", { json: payload });

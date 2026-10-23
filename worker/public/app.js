@@ -347,6 +347,15 @@ function bubble(m) {
   const isMe = m.role === "assistant";
   const b = el("div", `msg ${m.role}`);
 
+  // Quoted reply indication (when replying to a message)
+  if (m.quoted_text || m.quoted_id) {
+    const quoteBox = el("div", "msg-quoted");
+    const quoteSender = el("div", "msg-quoted-sender", m.quoted_sender || "Reply");
+    const quoteContent = el("div", "msg-quoted-text", m.quoted_text || "[Message]");
+    quoteBox.append(quoteSender, quoteContent);
+    b.append(quoteBox);
+  }
+
   // Anti-delete / Unsend Notice Tag
   if (m.deleted_at) {
     const delTime = fmtTime(m.deleted_at);
@@ -425,6 +434,23 @@ function bubble(m) {
     b.append(textNode);
   }
 
+  // Message Reactions Badge
+  let reactionList = [];
+  if (m.reactions) {
+    try {
+      reactionList = typeof m.reactions === "string" ? JSON.parse(m.reactions) : m.reactions;
+    } catch {}
+  }
+  if (Array.isArray(reactionList) && reactionList.length > 0) {
+    const badge = el("div", "msg-reactions-badge");
+    reactionList.forEach((r) => {
+      const who = r.fromMe ? "You" : (r.sender || "");
+      const pill = el("span", "msg-reaction-pill", `${r.emoji} ${who}`.trim());
+      badge.append(pill);
+    });
+    b.append(badge);
+  }
+
   let sender = "Them";
   if (isMe) {
     if (m.source === "whatsapp-device") {
@@ -453,9 +479,78 @@ function bubble(m) {
   }
   const meta = [sender, m.created_at ? fmtTime(m.created_at) : ""];
   if (m.neurons) meta.push(`${m.neurons.toFixed(1)} neurons`);
-  b.append(el("span", "meta", meta.filter(Boolean).join(" · ")));
+
+  const metaBox = el("div", "meta-box");
+  metaBox.style.cssText = "display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-top: 4px;";
+  metaBox.append(el("span", "meta", meta.filter(Boolean).join(" · ")));
+
+  // Message Edit Tag & Edit History Modal Trigger
+  let editHistoryList = [];
+  if (m.edit_history) {
+    try {
+      editHistoryList = typeof m.edit_history === "string" ? JSON.parse(m.edit_history) : m.edit_history;
+    } catch {}
+  }
+  if (m.edited_at || (Array.isArray(editHistoryList) && editHistoryList.length > 0)) {
+    const editedTag = el("button", "msg-edited-badge", "✏️ Edited");
+    editedTag.type = "button";
+    editedTag.title = "View edit history (previous versions)";
+    editedTag.onclick = (e) => {
+      e.stopPropagation();
+      showEditHistoryModal(m, editHistoryList);
+    };
+    metaBox.append(editedTag);
+  }
+
+  b.append(metaBox);
   return b;
 }
+
+function showEditHistoryModal(m, editHistory) {
+  const modal = $("#edit-history-modal");
+  const list = $("#edit-history-list");
+  if (!modal || !list) return;
+
+  list.replaceChildren();
+
+  const sub = el("div", "edit-history-sub", `Edit history for message from ${m.sender_name || (m.role === "assistant" ? "You" : "Contact")}`);
+  list.append(sub);
+
+  // Past versions
+  if (Array.isArray(editHistory) && editHistory.length > 0) {
+    editHistory.forEach((h, idx) => {
+      const card = el("div", "edit-history-item");
+      const header = el("div", "edit-history-item-header");
+      const tag = el("span", "badge-old", idx === 0 ? "Original Message" : `Version ${idx}`);
+      const time = el("span", "edit-time", fmtTime(h.edited_at));
+      header.append(tag, time);
+      const text = el("div", "edit-history-text", h.text);
+      card.append(header, text);
+      list.append(card);
+    });
+  }
+
+  // Current version
+  const currentCard = el("div", "edit-history-item current");
+  const curHeader = el("div", "edit-history-item-header");
+  const curTag = el("span", "badge-current", "Current Message (Latest)");
+  const curTime = el("span", "edit-time", m.edited_at ? fmtTime(m.edited_at) : fmtTime(m.created_at));
+  curHeader.append(curTag, curTime);
+  const curText = el("div", "edit-history-text", m.content);
+  currentCard.append(curHeader, curText);
+  list.append(currentCard);
+
+  modal.classList.remove("hidden");
+}
+
+$("#close-edit-modal")?.addEventListener("click", () => {
+  $("#edit-history-modal")?.classList.add("hidden");
+});
+$("#edit-history-modal")?.addEventListener("click", (e) => {
+  if (e.target.id === "edit-history-modal") {
+    $("#edit-history-modal").classList.add("hidden");
+  }
+});
 
 async function loadDashboardChat() {
   const { messages } = await api("GET", "/api/messages?chat=dashboard");
