@@ -324,6 +324,25 @@ function contextInfoOf(message) {
   return undefined;
 }
 
+function isLid(jid) {
+  if (!jid) return false;
+  const s = String(jid).trim();
+  if (s.endsWith("@lid")) return true;
+  const user = s.split("@")[0].replace(/\D/g, "");
+  // WhatsApp LIDs are 14-16 digits and do not start with Bangladeshi mobile prefix 8801
+  if (user.length >= 14 && !user.startsWith("8801")) return true;
+  return false;
+}
+
+function isOwnerIdentifier(val) {
+  if (!val) return false;
+  const lower = String(val).toLowerCase().trim();
+  if (lower.includes("@gmail") || lower.includes("@yahoo") || lower.includes("@hotmail") || lower.includes("gamil")) return true;
+  if (lower.includes("sanjida") || lower.includes("sadia")) return true;
+  if (me.name && lower === me.name.toLowerCase().trim()) return true;
+  return false;
+}
+
 const isMe = (jid) => {
   if (!jid) return false;
   const norm = jidNormalizedUser(jid);
@@ -332,15 +351,16 @@ const isMe = (jid) => {
   const myP = phoneOf(me.pn);
   return Boolean(p && myP && p === myP);
 };
+
 const phoneOf = (...jids) => {
   for (const j of jids) {
-    if (!j) continue;
+    if (!j || isLid(j)) continue;
     if (isPnUser(j)) {
       const decoded = jidDecode(j)?.user;
-      if (decoded) return decoded;
+      if (decoded && !isLid(decoded)) return decoded;
     }
     const clean = String(j).split("@")[0].replace(/[^0-9]/g, "");
-    if (clean && clean.length >= 7 && clean.length <= 15 && !clean.includes("lid")) {
+    if (clean && clean.length >= 7 && clean.length <= 13 && !isLid(clean)) {
       return clean;
     }
   }
@@ -349,20 +369,43 @@ const phoneOf = (...jids) => {
 
 const lidToPn = new Map([
   ["138500078878823@lid", "8801922525075@s.whatsapp.net"],
+  ["138500078878823@s.whatsapp.net", "8801922525075@s.whatsapp.net"],
   ["241759615455335@lid", "8801616504049@s.whatsapp.net"],
+  ["241759615455335@s.whatsapp.net", "8801616504049@s.whatsapp.net"],
+  ["258226671059105@lid", "8801951773640@s.whatsapp.net"],
+  ["258226671059105@s.whatsapp.net", "8801951773640@s.whatsapp.net"],
+  ["200498300866656@lid", "8801889944708@s.whatsapp.net"],
+  ["200498300866656@s.whatsapp.net", "8801889944708@s.whatsapp.net"],
+  ["12150496051442@lid", "8801947365270@s.whatsapp.net"],
+  ["12150496051442@s.whatsapp.net", "8801947365270@s.whatsapp.net"],
+  ["214654211109018@lid", "8801790323817@s.whatsapp.net"],
+  ["214654211109018@s.whatsapp.net", "8801790323817@s.whatsapp.net"],
+  ["165206101618943@lid", "8801786449273@s.whatsapp.net"],
+  ["165206101618943@s.whatsapp.net", "8801786449273@s.whatsapp.net"],
+  ["137506062544@lid", "8801879541910@s.whatsapp.net"],
+  ["137506062544@s.whatsapp.net", "8801879541910@s.whatsapp.net"],
 ]);
 const pnToLid = new Map([
   ["8801922525075@s.whatsapp.net", "138500078878823@lid"],
   ["8801616504049@s.whatsapp.net", "241759615455335@lid"],
+  ["8801951773640@s.whatsapp.net", "258226671059105@lid"],
+  ["8801889944708@s.whatsapp.net", "200498300866656@lid"],
+  ["8801947365270@s.whatsapp.net", "12150496051442@lid"],
+  ["8801790323817@s.whatsapp.net", "214654211109018@lid"],
+  ["8801786449273@s.whatsapp.net", "165206101618943@lid"],
+  ["8801879541910@s.whatsapp.net", "137506062544@lid"],
 ]);
 
 function mapLidPn(lid, pn) {
   if (!lid || !pn) return;
   const normLid = jidNormalizedUser(lid);
   const normPn = jidNormalizedUser(pn);
-  if (normLid.endsWith("@lid") && isPnUser(normPn)) {
+  const user = normLid.split("@")[0];
+  if (isPnUser(normPn) && !isLid(normPn)) {
     lidToPn.set(normLid, normPn);
-    pnToLid.set(normPn, normLid);
+    lidToPn.set(`${user}@lid`, normPn);
+    lidToPn.set(`${user}@s.whatsapp.net`, normPn);
+    pnToLid.set(normPn, `${user}@lid`);
   }
 }
 
@@ -370,17 +413,21 @@ function resolveCanonicalChatId(jid, altJid) {
   if (!jid) return jid;
   if (isJidGroup(jid)) return jid;
   const norm = jidNormalizedUser(jid);
-  if (isPnUser(norm)) return norm;
-  if (norm.endsWith("@lid")) {
-    const fromMap = lidToPn.get(norm);
-    if (fromMap) return fromMap;
-    const p = phoneOf(jid, altJid);
-    if (p) {
-      const pnJid = `${p}@s.whatsapp.net`;
-      mapLidPn(norm, pnJid);
-      return pnJid;
-    }
+  const user = norm.split("@")[0];
+
+  if (lidToPn.has(norm)) return lidToPn.get(norm);
+  if (lidToPn.has(`${user}@lid`)) return lidToPn.get(`${user}@lid`);
+  if (lidToPn.has(`${user}@s.whatsapp.net`)) return lidToPn.get(`${user}@s.whatsapp.net`);
+
+  if (!isLid(norm) && isPnUser(norm)) return norm;
+
+  const p = phoneOf(altJid, jid);
+  if (p) {
+    const pnJid = `${p}@s.whatsapp.net`;
+    mapLidPn(norm, pnJid);
+    return pnJid;
   }
+
   return norm;
 }
 
@@ -408,8 +455,10 @@ function recordContact(c) {
   const id = jidNormalizedUser(c.id);
   const p = phoneOf(c.id);
   const prev = contactStore.get(id) || {};
-  const name = c.name || prev.name || null;
-  const notify = c.notify || prev.notify || c.verifiedName || null;
+  const rawName = c.name || prev.name || null;
+  const rawNotify = c.notify || prev.notify || c.verifiedName || null;
+  const name = !isOwnerIdentifier(rawName) ? rawName : null;
+  const notify = !isOwnerIdentifier(rawNotify) ? rawNotify : null;
   const phone = p || prev.phone || null;
   const entry = { name, notify, phone };
 
@@ -639,7 +688,7 @@ async function onMessage(msg) {
   if (!text && !mediaInfo) return;
 
   // If incoming message from contact, record sender's WhatsApp username (pushName):
-  if (!isOutgoing && msg.pushName) {
+  if (!isOutgoing && msg.pushName && !isOwnerIdentifier(msg.pushName)) {
     const p = phoneOf(canonicalChatId, rawChatJid, key.remoteJidAlt);
     const prev = contactStore.get(canonicalChatId) || contactStore.get(rawChatJid) || {};
     const entry = {
@@ -682,18 +731,25 @@ async function onMessage(msg) {
         quotedSender = me.name || "You";
       } else {
         const qInfo = getContactInfo(qParticipant);
-        quotedSender = qInfo?.name || qInfo?.notify || phoneOf(qParticipant) || "Contact";
+        quotedSender = (!isOwnerIdentifier(qInfo?.name) ? qInfo?.name : null) ||
+          (!isOwnerIdentifier(qInfo?.notify) ? qInfo?.notify : null) ||
+          phoneOf(qParticipant) ||
+          "Contact";
       }
     }
   }
 
   const contactInfo = !isGroup ? getContactInfo(canonicalChatId, rawChatJid, key.remoteJidAlt) : null;
+  const rawContactName = !isOwnerIdentifier(contactInfo?.name) ? contactInfo?.name : null;
+  const rawContactNotify = !isOwnerIdentifier(contactInfo?.notify) ? contactInfo?.notify : null;
+  const rawPushName = (!isOutgoing && !isOwnerIdentifier(msg.pushName)) ? msg.pushName : null;
+
   const chatName = isGroup
     ? await groupName(canonicalChatId)
-    : (contactInfo?.name || (!isOutgoing ? msg.pushName : null) || contactInfo?.notify || null);
+    : (rawContactName || rawPushName || rawContactNotify || null);
   const chatNotify = isGroup
     ? null
-    : ((!isOutgoing ? msg.pushName : null) || contactInfo?.notify || null);
+    : (rawPushName || rawContactNotify || null);
   const chatPhone = isGroup
     ? null
     : (phoneOf(canonicalChatId, rawChatJid, key.remoteJidAlt) || contactInfo?.phone || null);
@@ -708,7 +764,7 @@ async function onMessage(msg) {
     isSelfChat,
     fromMe: isOutgoing,
     senderPhone: isGroup ? phoneOf(key.participant, key.participantAlt) : phoneOf(canonicalChatId, rawChatJid, key.remoteJidAlt),
-    senderName: isOutgoing ? me.name : (contactInfo?.name || msg.pushName || contactInfo?.notify || null),
+    senderName: isOutgoing ? (me.name || "You") : (rawContactName || rawPushName || rawContactNotify || null),
     text: (text || "").slice(0, 4000),
     mentioned,
     timestamp: sentAt || Date.now(),

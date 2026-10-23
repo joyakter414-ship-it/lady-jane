@@ -466,7 +466,16 @@ function bubble(m) {
     const isBad = (s) => {
       if (!s) return true;
       const v = s.toLowerCase().trim();
-      return v.includes("@gmail") || v.includes("@yahoo") || (ownerName && v === ownerName) || (ownerEmail && v === ownerEmail);
+      return (
+        v.includes("@gmail") ||
+        v.includes("@yahoo") ||
+        v.includes("@hotmail") ||
+        v.includes("gamil") ||
+        v.includes("sanjida") ||
+        v.includes("sadia") ||
+        (ownerName && v === ownerName) ||
+        (ownerEmail && v === ownerEmail)
+      );
     };
 
     if (m.sender_name && !isBad(m.sender_name)) {
@@ -607,9 +616,16 @@ function formatChatMeta(c) {
   const isInvalid = (val) => {
     if (!val) return true;
     const v = val.toLowerCase().trim();
-    if (v.includes("@gmail") || v.includes("@yahoo") || v.includes("@hotmail")) return true;
-    if (ownerName && v === ownerName) return true;
-    if (ownerEmail && v === ownerEmail) return true;
+    if (
+      v.includes("@gmail") ||
+      v.includes("@yahoo") ||
+      v.includes("@hotmail") ||
+      v.includes("gamil") ||
+      v.includes("sanjida") ||
+      v.includes("sadia") ||
+      (ownerName && v === ownerName) ||
+      (ownerEmail && v === ownerEmail)
+    ) return true;
     return false;
   };
 

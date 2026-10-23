@@ -148,8 +148,13 @@ async function updateContacts(env, contacts) {
     const notify = c.notify?.trim() || null;
     const phone = c.phone || (c.id.includes("@s.whatsapp.net") ? c.id.split("@")[0] : null);
     if (!name && !notify && !phone) continue;
-    const cleanName = name && (name.includes("@gmail") || name.toLowerCase() === "sadia") ? null : name;
-    const cleanNotify = notify && (notify.includes("@gmail") || notify.toLowerCase() === "sadia") ? null : notify;
+    const isOwner = (v) => {
+      if (!v) return false;
+      const lower = v.toLowerCase().trim();
+      return lower.includes("@gmail") || lower.includes("@yahoo") || lower.includes("@hotmail") || lower.includes("gamil") || lower.includes("sanjida") || lower.includes("sadia");
+    };
+    const cleanName = name && isOwner(name) ? null : name;
+    const cleanNotify = notify && isOwner(notify) ? null : notify;
     stmts.push(
       env.DB.prepare(
         `UPDATE chats SET
@@ -351,14 +356,23 @@ function shouldAnswer(s, m) {
 }
 async function handleIncoming(env, m) {
   const s = await getSettings(env);
+  const LID_TO_PN = {
+    "138500078878823": "8801922525075@s.whatsapp.net",
+    "241759615455335": "8801616504049@s.whatsapp.net",
+    "258226671059105": "8801951773640@s.whatsapp.net",
+    "200498300866656": "8801889944708@s.whatsapp.net",
+    "12150496051442": "8801947365270@s.whatsapp.net",
+    "214654211109018": "8801790323817@s.whatsapp.net",
+    "165206101618943": "8801786449273@s.whatsapp.net",
+    "137506062544": "8801879541910@s.whatsapp.net"
+  };
   let canonicalChatId = m.chatId;
-  if (canonicalChatId.endsWith("@lid")) {
-    if (m.chatPhone) {
-      canonicalChatId = `${m.chatPhone.replace(/\D/g, "")}@s.whatsapp.net`;
-    } else if (canonicalChatId.includes("138500078878823")) {
-      canonicalChatId = "8801922525075@s.whatsapp.net";
-    } else if (canonicalChatId.includes("241759615455335")) {
-      canonicalChatId = "8801616504049@s.whatsapp.net";
+  const userPart = canonicalChatId.split("@")[0].replace(/\D/g, "");
+  if (LID_TO_PN[userPart]) {
+    canonicalChatId = LID_TO_PN[userPart];
+  } else if (canonicalChatId.endsWith("@lid") || userPart.length >= 14 && !userPart.startsWith("8801")) {
+    if (m.chatPhone && m.chatPhone.startsWith("8801") && m.chatPhone.length === 13) {
+      canonicalChatId = `${m.chatPhone}@s.whatsapp.net`;
     }
   }
   if (m.isRevoke && m.revokedMsgId) {
@@ -386,13 +400,14 @@ async function handleIncoming(env, m) {
   const isOwnerIdentifier = (val) => {
     if (!val) return false;
     const lower = val.toLowerCase().trim();
-    if (lower.includes("@gmail") || lower.includes("@yahoo") || lower.includes("@hotmail")) return true;
+    if (lower.includes("@gmail") || lower.includes("@yahoo") || lower.includes("@hotmail") || lower.includes("gamil")) return true;
+    if (lower.includes("sanjida") || lower.includes("sadia")) return true;
     if (s.ownerName && lower === s.ownerName.toLowerCase().trim()) return true;
     return false;
   };
   let candidateChatName = null;
   let candidateChatNotify = null;
-  const candidateChatPhone = m.chatPhone || (!m.isGroup && m.chatId.includes("@s.whatsapp.net") ? m.chatId.split("@")[0] : null);
+  const candidateChatPhone = m.chatPhone && m.chatPhone.length <= 13 && !m.chatPhone.includes("@lid") ? m.chatPhone : !m.isGroup && canonicalChatId.includes("@s.whatsapp.net") && canonicalChatId.split("@")[0].length <= 13 ? canonicalChatId.split("@")[0] : null;
   if (!isOutgoing) {
     candidateChatName = !isOwnerIdentifier(m.chatName) ? m.chatName ?? null : null;
     candidateChatNotify = !isOwnerIdentifier(m.chatNotify) ? m.chatNotify ?? null : !isOwnerIdentifier(m.senderName) ? m.senderName ?? null : null;

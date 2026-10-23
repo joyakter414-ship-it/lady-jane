@@ -266,8 +266,20 @@ export async function updateContacts(
     const phone = c.phone || (c.id.includes("@s.whatsapp.net") ? c.id.split("@")[0] : null);
     if (!name && !notify && !phone) continue;
 
-    const cleanName = name && (name.includes("@gmail") || name.toLowerCase() === "sadia") ? null : name;
-    const cleanNotify = notify && (notify.includes("@gmail") || notify.toLowerCase() === "sadia") ? null : notify;
+    const isOwner = (v: string | null) => {
+      if (!v) return false;
+      const lower = v.toLowerCase().trim();
+      return (
+        lower.includes("@gmail") ||
+        lower.includes("@yahoo") ||
+        lower.includes("@hotmail") ||
+        lower.includes("gamil") ||
+        lower.includes("sanjida") ||
+        lower.includes("sadia")
+      );
+    };
+    const cleanName = name && isOwner(name) ? null : name;
+    const cleanNotify = notify && isOwner(notify) ? null : notify;
 
     stmts.push(
       env.DB.prepare(
