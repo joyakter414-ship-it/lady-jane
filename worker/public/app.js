@@ -67,13 +67,11 @@ async function enterApp() {
       if (currentChat) {
         api("GET", `/api/messages?chat=${encodeURIComponent(currentChat.chat_id)}`).then(({ messages }) => {
           const log = $("#conv-log");
-          const wasAtBottom = log.scrollHeight - log.scrollTop <= log.clientHeight + 50;
-          log.replaceChildren(...messages.map(bubble));
-          if (wasAtBottom) log.scrollTop = log.scrollHeight;
+          renderConversationMessages(log, messages, false);
         }).catch(() => {});
       }
     }
-  }, 4000);
+  }, 3500);
 }
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
@@ -346,6 +344,8 @@ $("#wa-reset").addEventListener("click", async () => {
 function bubble(m) {
   const isMe = m.role === "assistant";
   const b = el("div", `msg ${m.role}`);
+  if (m.id) b.dataset.msgId = m.id;
+  b.dataset.fingerprint = `${m.edited_at || 0}:${m.reactions || ""}:${m.deleted_at || 0}`;
 
   // Quoted reply indication (when replying to a message)
   if (m.quoted_text || m.quoted_id) {
@@ -389,8 +389,14 @@ function bubble(m) {
       img.src = mediaSrc;
       img.alt = "WhatsApp image";
       img.loading = "lazy";
-      img.style.cssText = "max-width: 100%; max-height: 320px; border-radius: 8px; display: block; margin: 6px 0; cursor: pointer;";
+      img.style.cssText = "max-width: 100%; max-height: 320px; border-radius: 8px; display: block; margin: 6px 0; cursor: pointer; min-height: 60px;";
       img.onclick = () => window.open(mediaSrc, "_blank");
+      img.onload = () => {
+        const parentLog = img.closest(".chat-log");
+        if (parentLog && parentLog.scrollHeight - parentLog.scrollTop <= parentLog.clientHeight + 150) {
+          parentLog.scrollTop = parentLog.scrollHeight;
+        }
+      };
       b.append(img);
     } else if (m.media_type === "audio") {
       const audioContainer = el("div", "msg-media-audio-box");
@@ -692,13 +698,24 @@ function formatChatMeta(c) {
   };
 }
 
+let lastChatsFingerprint = "";
+
 async function loadChats() {
   const { chats } = await api("GET", "/api/chats");
   const list = $("#chat-list");
-  if (!chats.length) {
+  if (!chats || !chats.length) {
     list.replaceChildren(el("p", "muted", "No conversations yet. Once Lady Jane answers someone on WhatsApp, it appears here."));
+    lastChatsFingerprint = "";
     return;
   }
+
+  const fingerprint = chats.map((c) => `${c.chat_id}:${c.name || ""}:${c.notify_name || ""}:${c.last_at}:${c.message_count}:${c.muted}`).join("|") + `|active:${currentChat?.chat_id || ""}`;
+  if (fingerprint === lastChatsFingerprint) {
+    return;
+  }
+  lastChatsFingerprint = fingerprint;
+
+  const prevScroll = list.scrollTop;
   list.replaceChildren(
     ...chats.map((c) => {
       const item = el("div", `chat-item${currentChat?.chat_id === c.chat_id ? " active" : ""}`);
@@ -711,6 +728,67 @@ async function loadChats() {
       return item;
     }),
   );
+  list.scrollTop = prevScroll;
+}
+
+let lastMessagesFingerprint = "";
+
+function getMessagesFingerprint(messages) {
+  if (!messages || !messages.length) return "";
+  return messages.map((m) => `${m.id}:${m.edited_at || 0}:${m.reactions || ""}:${m.deleted_at || 0}`).join("|");
+}
+
+function renderConversationMessages(log, messages, forceScrollBottom = false) {
+  if (!log || !Array.isArray(messages)) return;
+  const newFingerprint = getMessagesFingerprint(messages);
+
+  // If exact same messages and not forcing scroll to bottom, do NOT touch DOM at all!
+  if (!forceScrollBottom && newFingerprint === lastMessagesFingerprint) {
+    return;
+  }
+
+  // Check if user is currently at or near bottom (within 100px)
+  const isAtBottom = log.scrollHeight - log.scrollTop <= log.clientHeight + 100;
+  const prevScrollTop = log.scrollTop;
+  const prevScrollHeight = log.scrollHeight;
+
+  const existingBubbles = Array.from(log.querySelectorAll(".msg[data-msg-id]"));
+
+  // Check if we can do an append-only update:
+  // All existing bubbles match the first N messages and have unchanged fingerprints
+  const canAppend =
+    !forceScrollBottom &&
+    existingBubbles.length > 0 &&
+    messages.length > existingBubbles.length &&
+    existingBubbles.every((b, i) => b.dataset.msgId === messages[i]?.id) &&
+    messages.slice(0, existingBubbles.length).every((m, i) => {
+      const b = existingBubbles[i];
+      return b.dataset.fingerprint === `${m.edited_at || 0}:${m.reactions || ""}:${m.deleted_at || 0}`;
+    });
+
+  if (canAppend) {
+    const newItems = messages.slice(existingBubbles.length);
+    for (const m of newItems) {
+      log.appendChild(bubble(m));
+    }
+    lastMessagesFingerprint = newFingerprint;
+    if (isAtBottom) {
+      log.scrollTop = log.scrollHeight;
+    }
+    return;
+  }
+
+  // Full re-render or initial open
+  lastMessagesFingerprint = newFingerprint;
+  log.replaceChildren(...messages.map(bubble));
+
+  if (forceScrollBottom || isAtBottom) {
+    log.scrollTop = log.scrollHeight;
+  } else {
+    // Preserve the user's scroll position so reading isn't interrupted!
+    const heightDiff = log.scrollHeight - prevScrollHeight;
+    log.scrollTop = prevScrollTop + (heightDiff > 0 ? heightDiff : 0);
+  }
 }
 
 async function openChat(c) {
@@ -740,8 +818,8 @@ async function openChat(c) {
 
   const { messages } = await api("GET", `/api/messages?chat=${encodeURIComponent(c.chat_id)}`);
   const log = $("#conv-log");
-  log.replaceChildren(...messages.map(bubble));
-  log.scrollTop = log.scrollHeight;
+  lastMessagesFingerprint = ""; // Reset fingerprint for the newly selected chat!
+  renderConversationMessages(log, messages, true); // force scroll to bottom on initial open
 
   const form = $("#conv-send-form");
   const input = $("#conv-send-input");
