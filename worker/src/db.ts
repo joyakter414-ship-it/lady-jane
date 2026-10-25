@@ -238,26 +238,30 @@ export async function upsertChat(
   name: string | null = null,
   notifyName: string | null = null,
   phone: string | null = null,
-  isGroup: boolean = false
+  isGroup: boolean = false,
+  avatarUrl: string | null = null,
+  bio: string | null = null
 ): Promise<{ muted: boolean }> {
   const row = await env.DB.prepare(
-    `INSERT INTO chats (chat_id, name, notify_name, phone, is_group, last_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+    `INSERT INTO chats (chat_id, name, notify_name, phone, is_group, last_at, avatar_url, bio)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
      ON CONFLICT(chat_id) DO UPDATE SET
        name = COALESCE(?2, name),
        notify_name = COALESCE(?3, notify_name),
        phone = COALESCE(?4, phone),
+       avatar_url = COALESCE(?7, avatar_url),
+       bio = COALESCE(?8, bio),
        last_at = ?6
      RETURNING muted`,
   )
-    .bind(chatId, name, notifyName, phone, isGroup ? 1 : 0, Date.now())
+    .bind(chatId, name, notifyName, phone, isGroup ? 1 : 0, Date.now(), avatarUrl, bio)
     .first<{ muted: number }>();
   return { muted: Boolean(row?.muted) };
 }
 
 export async function updateContacts(
   env: AppEnv,
-  contacts: Array<{ id: string; name?: string; notify?: string; phone?: string }>
+  contacts: Array<{ id: string; name?: string; notify?: string; phone?: string; avatar?: string; bio?: string }>
 ): Promise<void> {
   const stmts = [];
   for (const c of contacts) {
@@ -265,7 +269,9 @@ export async function updateContacts(
     const name = c.name?.trim() || null;
     const notify = c.notify?.trim() || null;
     const phone = c.phone || (c.id.includes("@s.whatsapp.net") ? c.id.split("@")[0] : null);
-    if (!name && !notify && !phone) continue;
+    const avatar = c.avatar || null;
+    const bio = c.bio || null;
+    if (!name && !notify && !phone && !avatar && !bio) continue;
 
     const isOwner = (v: string | null) => {
       if (!v) return false;
@@ -287,9 +293,11 @@ export async function updateContacts(
         `UPDATE chats SET
            name = COALESCE(?1, name),
            notify_name = COALESCE(?2, notify_name),
-           phone = COALESCE(?3, phone)
-         WHERE chat_id = ?4 OR chat_id = ?5`,
-      ).bind(cleanName, cleanNotify, phone, c.id, phone ? `${phone}@s.whatsapp.net` : c.id)
+           phone = COALESCE(?3, phone),
+           avatar_url = COALESCE(?4, avatar_url),
+           bio = COALESCE(?5, bio)
+         WHERE chat_id = ?6 OR chat_id = ?7`,
+      ).bind(cleanName, cleanNotify, phone, avatar, bio, c.id, phone ? `${phone}@s.whatsapp.net` : c.id)
     );
   }
   for (let i = 0; i < stmts.length; i += 50) {

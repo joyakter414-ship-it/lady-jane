@@ -103,6 +103,22 @@ async function start() {
       log.info(`✅ Connected to WhatsApp as ${me.name ?? ""} (+${jidDecode(me.pn)?.user ?? "?"})`);
       await setState("open");
       await backupNow(log);
+
+      // Proactively enrich profile pictures and bio for active chats in background:
+      setTimeout(async () => {
+        try {
+          const res = await brain("GET", "/gw/chats-to-enrich", { retries: 0 }).catch(() => null);
+          if (Array.isArray(res?.chats)) {
+            log.info({ count: res.chats.length }, "Enriching profile pictures and bios for active chats in background...");
+            for (const c of res.chats) {
+              if (c.chat_id) queueProfileFetch(c.chat_id);
+              if (c.phone) queueProfileFetch(`${c.phone}@s.whatsapp.net`);
+            }
+          }
+        } catch (e) {
+          log.debug({ err: String(e) }, "Initial profile enrichment note");
+        }
+      }, 3500);
     }
 
     if (connection === "close") {
@@ -487,6 +503,92 @@ function scheduleContactSync() {
   }, 3000);
 }
 
+// ─── Contact Profile Picture & Bio / Status Fetcher ──────────────────────────
+
+const profileCache = new Map(); // jid -> { avatar, bio, at }
+const profileQueue = new Set();
+let profileWorkerRunning = false;
+
+function queueProfileFetch(jid) {
+  if (!jid || jid === "status@broadcast" || jid.endsWith("@broadcast") || jid.endsWith("@newsletter")) return;
+  const norm = jidNormalizedUser(jid);
+  const cached = profileCache.get(norm);
+  if (cached && Date.now() - cached.at < 12 * 3600 * 1000) {
+    return;
+  }
+  profileQueue.add(norm);
+  if (!profileWorkerRunning) {
+    startProfileWorker();
+  }
+}
+
+async function startProfileWorker() {
+  if (profileWorkerRunning) return;
+  profileWorkerRunning = true;
+
+  while (profileQueue.size > 0 && sock && state === "open") {
+    const jid = profileQueue.values().next().value;
+    profileQueue.delete(jid);
+    try {
+      await fetchProfile(jid);
+    } catch (e) {
+      log.debug({ err: String(e), jid }, "Profile fetch error");
+    }
+    // Polite 650ms delay between WhatsApp IQ requests to prevent rate-limits:
+    await new Promise((r) => setTimeout(r, 650));
+  }
+
+  profileWorkerRunning = false;
+}
+
+async function fetchProfile(norm) {
+  if (!sock || !norm || state !== "open") return;
+  const now = Date.now();
+  let avatar = null;
+  let bio = null;
+
+  // Build candidate JIDs (support both LID and PN users)
+  const candidateJids = [norm];
+  const p = phoneOf(norm);
+  if (p && !norm.includes(p)) {
+    candidateJids.push(`${p}@s.whatsapp.net`);
+  }
+
+  for (const j of candidateJids) {
+    if (!avatar) {
+      avatar = await sock.profilePictureUrl(j, "image").catch(() =>
+        sock.profilePictureUrl(j, "preview").catch(() => null)
+      );
+    }
+    if (!bio) {
+      if (isJidGroup(j)) {
+        const meta = await sock.groupMetadata(j).catch(() => null);
+        if (meta?.desc) bio = meta.desc;
+      } else {
+        const statusRes = await sock.fetchStatus(j).catch(() => null);
+        if (statusRes?.status) bio = statusRes.status;
+      }
+    }
+  }
+
+  profileCache.set(norm, { avatar, bio, at: now });
+
+  if (avatar || bio) {
+    log.info({ jid: norm, hasAvatar: Boolean(avatar), hasBio: Boolean(bio) }, "👤 Profile picture / bio retrieved for contact");
+    const prev = pendingContacts.get(norm) || contactStore.get(norm) || {};
+    const entry = {
+      id: norm,
+      name: prev.name || null,
+      notify: prev.notify || null,
+      phone: prev.phone || phoneOf(norm) || null,
+      avatar: avatar || prev.avatar || null,
+      bio: bio || prev.bio || null,
+    };
+    pendingContacts.set(norm, entry);
+    scheduleContactSync();
+  }
+}
+
 function handleContacts(contacts) {
   if (!Array.isArray(contacts)) return;
   for (const c of contacts) {
@@ -703,6 +805,10 @@ async function onMessage(msg) {
     scheduleContactSync();
   }
 
+  // Queue background profile picture and bio / status enrichment:
+  queueProfileFetch(canonicalChatId);
+  if (key.participant) queueProfileFetch(key.participant);
+
   // If outgoing message from user's phone, update me.name
   if (isOutgoing && msg.pushName && (!me.name || me.name !== msg.pushName)) {
     me.name = msg.pushName;
@@ -815,6 +921,9 @@ async function sendStatus(extra = {}) {
     if (res?.command === "logout" && sock && state === "open") {
       log.warn("Logout requested from the dashboard.");
       await sock.logout().catch((err) => log.error({ err: String(err) }, "Logout failed"));
+    }
+    if (res?.command === "fetch_profile" && res?.commandPayload?.jid) {
+      queueProfileFetch(res.commandPayload.jid);
     }
     if (Array.isArray(res?.outbound) && res.outbound.length > 0 && sock && state === "open") {
       for (const item of res.outbound) {

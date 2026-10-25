@@ -613,6 +613,58 @@ $("#chat-reset").addEventListener("click", async () => {
 
 // ─── Conversations ───────────────────────────────────────────────────────────
 
+function getInitials(name) {
+  if (!name) return "WA";
+  const clean = name.replace(/[^\p{L}\p{N}\s]/gu, "").trim();
+  const parts = clean.split(/\s+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return (parts[0][0] + parts[1][0]).toUpperCase();
+  }
+  return clean.slice(0, 2).toUpperCase() || "WA";
+}
+
+function getAvatarColor(str) {
+  const colors = [
+    "#0284c7", "#059669", "#d97706", "#dc2626", "#7c3aed",
+    "#db2777", "#4f46e5", "#0891b2", "#65a30d", "#ea580c"
+  ];
+  let hash = 0;
+  for (let i = 0; i < (str || "WA").length; i++) {
+    hash = (str || "WA").charCodeAt(i) + ((hash << 5) - hash);
+  }
+  return colors[Math.abs(hash) % colors.length];
+}
+
+function createAvatarElement(avatarUrl, name, size = 44) {
+  const box = el("div", "chat-item-avatar-box");
+  box.style.width = `${size}px`;
+  box.style.height = `${size}px`;
+
+  const initials = getInitials(name);
+  const color = getAvatarColor(name || initials);
+
+  const fallback = el("div", "chat-item-avatar-fallback", initials);
+  fallback.style.cssText = `width: ${size}px; height: ${size}px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; color: #ffffff; font-size: ${Math.round(size * 0.36)}px; background: ${color};`;
+
+  if (avatarUrl) {
+    const password = localStorage.getItem("lj_password") || "";
+    const img = el("img", "chat-item-avatar-img");
+    img.src = `/api/avatar?url=${encodeURIComponent(avatarUrl)}&token=${encodeURIComponent(password)}`;
+    img.alt = name || "Avatar";
+    img.loading = "lazy";
+    img.style.cssText = `width: ${size}px; height: ${size}px; border-radius: 50%; object-fit: cover; border: 1px solid #e2e8f0; display: block;`;
+    img.onerror = () => {
+      img.style.display = "none";
+      fallback.style.display = "flex";
+    };
+    box.append(img);
+  } else {
+    box.append(fallback);
+  }
+
+  return box;
+}
+
 function formatChatMeta(c) {
   if (c.chat_id === "dashboard") {
     return {
@@ -623,6 +675,8 @@ function formatChatMeta(c) {
       primaryName: "Dashboard",
       phone: "",
       whatsappId: "dashboard",
+      avatarUrl: null,
+      bio: "Official AI Sandbox",
     };
   }
 
@@ -661,11 +715,12 @@ function formatChatMeta(c) {
       primaryName: c.name || "WhatsApp Group",
       phone: "",
       whatsappId,
+      avatarUrl: c.avatar_url || null,
+      bio: c.bio || null,
     };
   }
 
   // 1-on-1 Contact chat:
-  // Shows: name set in other device, whatsapp username, number, whatsapp unique id
   let titleHtml = "";
   let headerHtml = "";
 
@@ -705,6 +760,8 @@ function formatChatMeta(c) {
     primaryName: deviceName || whatsappName || formattedPhone || "Contact",
     phone: formattedPhone,
     whatsappId,
+    avatarUrl: c.avatar_url || null,
+    bio: c.bio || null,
   };
 }
 
@@ -719,7 +776,7 @@ async function loadChats() {
     return;
   }
 
-  const fingerprint = chats.map((c) => `${c.chat_id}:${c.name || ""}:${c.notify_name || ""}:${c.last_at}:${c.message_count}:${c.muted}`).join("|") + `|active:${currentChat?.chat_id || ""}`;
+  const fingerprint = chats.map((c) => `${c.chat_id}:${c.name || ""}:${c.notify_name || ""}:${c.avatar_url || ""}:${c.bio || ""}:${c.last_at}:${c.message_count}:${c.muted}`).join("|") + `|active:${currentChat?.chat_id || ""}`;
   if (fingerprint === lastChatsFingerprint) {
     return;
   }
@@ -730,10 +787,20 @@ async function loadChats() {
     ...chats.map((c) => {
       const item = el("div", `chat-item${currentChat?.chat_id === c.chat_id ? " active" : ""}`);
       const meta = formatChatMeta(c);
+      const avatarEl = createAvatarElement(c.avatar_url, meta.primaryName, 44);
+
+      const contentEl = el("div", "chat-item-content");
       const nameEl = el("div", "name");
       nameEl.innerHTML = `${meta.titleHtml}${c.muted ? " 🔇" : ""}`;
       const subEl = el("div", "sub", meta.sub);
-      item.append(nameEl, subEl);
+      contentEl.append(nameEl, subEl);
+
+      if (c.bio) {
+        const bioEl = el("div", "bio-snippet", `"${c.bio}"`);
+        contentEl.append(bioEl);
+      }
+
+      item.append(avatarEl, contentEl);
       item.addEventListener("click", () => openChat(c));
       return item;
     }),
@@ -809,6 +876,50 @@ async function openChat(c) {
   if (subEl) {
     subEl.innerHTML = meta.subHeaderHtml;
   }
+
+  // Update Profile Picture Avatar & Bio:
+  const avatarImg = $("#conv-avatar-img");
+  const avatarFallback = $("#conv-avatar-fallback");
+  const avatarBox = $("#conv-avatar-box");
+  const bioBox = $("#conv-bio-box");
+  const bioText = $("#conv-bio-text");
+
+  const initials = getInitials(meta.primaryName);
+  const color = getAvatarColor(meta.primaryName || initials);
+
+  if (avatarBox) {
+    avatarBox.onclick = () => {
+      if (c.avatar_url) window.open(c.avatar_url, "_blank");
+    };
+  }
+
+  if (avatarImg && avatarFallback) {
+    if (c.avatar_url) {
+      const password = localStorage.getItem("lj_password") || "";
+      avatarImg.src = `/api/avatar?url=${encodeURIComponent(c.avatar_url)}&token=${encodeURIComponent(password)}`;
+      avatarImg.style.display = "block";
+      avatarFallback.style.display = "none";
+      avatarImg.onerror = () => {
+        avatarImg.style.display = "none";
+        avatarFallback.style.display = "flex";
+      };
+    } else {
+      avatarImg.style.display = "none";
+      avatarFallback.style.display = "flex";
+    }
+    avatarFallback.textContent = initials;
+    avatarFallback.style.background = color;
+  }
+
+  if (bioBox && bioText) {
+    if (c.bio) {
+      bioBox.style.display = "block";
+      bioText.textContent = `💬 About: "${c.bio}"`;
+    } else {
+      bioBox.style.display = "none";
+    }
+  }
+
   $("#conv-clear").classList.remove("hidden");
   $("#conv-mute").classList.toggle("hidden", c.chat_id === "dashboard");
   $("#conv-mute").textContent = c.muted ? "Unmute" : "Mute";

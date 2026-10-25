@@ -68,14 +68,25 @@ async function gatewayRoutes(request: Request, env: AppEnv, url: URL): Promise<R
         at: Date.now(),
       };
       await kvSet(env, "gateway", next);
-      // Hand any pending dashboard command (e.g. logout) back to the gateway.
-      const command = await kvGet<{ cmd: string }>(env, "gateway_command");
+      // Hand any pending dashboard command (e.g. logout, fetch_profile) back to the gateway.
+      const command = await kvGet<{ cmd: string; jid?: string }>(env, "gateway_command");
       if (command) await kvDelete(env, "gateway_command");
       const outbound = (await kvGet<Array<{ id: string; jid: string; text: string }>>(env, "gateway_outbound_queue")) || [];
       if (outbound.length > 0) {
         await kvDelete(env, "gateway_outbound_queue");
       }
-      return json({ ok: true, command: command?.cmd ?? null, outbound });
+      return json({
+        ok: true,
+        command: command?.cmd ?? null,
+        commandPayload: command ?? null,
+        outbound,
+      });
+    }
+    case "GET /gw/chats-to-enrich": {
+      const { results } = await env.DB.prepare(
+        "SELECT chat_id, phone FROM chats ORDER BY last_at DESC LIMIT 40"
+      ).all<{ chat_id: string; phone: string | null }>();
+      return json({ chats: results || [] });
     }
     case "GET /gw/outbound": {
       const outbound = (await kvGet<Array<{ id: string; jid: string; text: string }>>(env, "gateway_outbound_queue")) || [];
@@ -234,6 +245,7 @@ async function dashboardRoutes(request: Request, env: AppEnv, url: URL): Promise
     case "GET /api/chats": {
       const { results } = await env.DB.prepare(
         `SELECT c.chat_id, c.name, c.notify_name, c.phone, c.is_group, c.muted, c.last_at,
+                c.avatar_url, c.bio,
                 (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.chat_id) AS message_count
          FROM chats c ORDER BY c.last_at DESC LIMIT 100`,
       ).all();
@@ -421,6 +433,36 @@ async function dashboardRoutes(request: Request, env: AppEnv, url: URL): Promise
       const days = Number(url.searchParams.get("days") || 10);
       const result = await cleanupOldMedia(env, days);
       return json({ ok: true, ...result });
+    }
+    case "GET /api/avatar": {
+      const targetUrl = url.searchParams.get("url");
+      if (!targetUrl) return new Response("url is required", { status: 400 });
+      try {
+        const parsed = new URL(targetUrl);
+        if (!parsed.hostname.endsWith(".whatsapp.net") && !parsed.hostname.endsWith(".whatsapp.com")) {
+          return new Response("Invalid avatar host", { status: 400 });
+        }
+        const avatarRes = await fetch(targetUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          },
+        });
+        if (!avatarRes.ok) {
+          return new Response(null, { status: avatarRes.status });
+        }
+        const headers = new Headers();
+        headers.set("content-type", avatarRes.headers.get("content-type") || "image/jpeg");
+        headers.set("cache-control", "public, max-age=86400, stale-while-revalidate=604800");
+        return new Response(avatarRes.body, { headers });
+      } catch {
+        return new Response("Failed to load avatar", { status: 502 });
+      }
+    }
+    case "POST /api/chat/refresh-profile": {
+      const chat = url.searchParams.get("chat");
+      if (!chat) return json({ error: "chat is required" }, 400);
+      await kvSet(env, "gateway_command", { cmd: "fetch_profile", jid: chat, at: Date.now() });
+      return json({ ok: true, queued: true });
     }
   }
   return json({ error: "Not found" }, 404);

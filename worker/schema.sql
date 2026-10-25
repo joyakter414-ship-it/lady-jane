@@ -22,11 +22,15 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_chat ON messages (chat_id, created_at);
 
 CREATE TABLE IF NOT EXISTS chats (
-  chat_id    TEXT PRIMARY KEY,
-  name       TEXT,
-  is_group   INTEGER NOT NULL DEFAULT 0,
-  muted      INTEGER NOT NULL DEFAULT 0,
-  last_at    INTEGER NOT NULL
+  chat_id     TEXT PRIMARY KEY,
+  name        TEXT,
+  is_group    INTEGER NOT NULL DEFAULT 0,
+  muted       INTEGER NOT NULL DEFAULT 0,
+  last_at     INTEGER NOT NULL,
+  notify_name TEXT,
+  phone       TEXT,
+  avatar_url  TEXT,
+  bio         TEXT
 );
 
 -- Daily Neuron usage, so the dashboard can show it against the 10,000/day free allocation.

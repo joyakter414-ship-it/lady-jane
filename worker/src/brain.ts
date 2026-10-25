@@ -265,7 +265,7 @@ export async function handleIncoming(env: AppEnv, m: IncomingMessage): Promise<D
 export async function handleDashboardChat(env: AppEnv, text: string): Promise<Decision> {
   const s = await getSettings(env);
   const chatId = "dashboard";
-  await upsertChat(env, chatId, "Dashboard", false);
+  await upsertChat(env, chatId, "Dashboard", null, null, false);
   const msgId = `dash:${crypto.randomUUID()}`;
   await insertMessage(env, {
     id: msgId, chat_id: chatId, role: "user", sender: null, sender_name: "You",

@@ -127,17 +127,19 @@ async function recentMessages(env, chatId, limit, excludeId) {
   ).bind(chatId, excludeId ?? "", limit).all();
   return results.reverse();
 }
-async function upsertChat(env, chatId, name = null, notifyName = null, phone = null, isGroup = false) {
+async function upsertChat(env, chatId, name = null, notifyName = null, phone = null, isGroup = false, avatarUrl = null, bio = null) {
   const row = await env.DB.prepare(
-    `INSERT INTO chats (chat_id, name, notify_name, phone, is_group, last_at)
-     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+    `INSERT INTO chats (chat_id, name, notify_name, phone, is_group, last_at, avatar_url, bio)
+     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
      ON CONFLICT(chat_id) DO UPDATE SET
        name = COALESCE(?2, name),
        notify_name = COALESCE(?3, notify_name),
        phone = COALESCE(?4, phone),
+       avatar_url = COALESCE(?7, avatar_url),
+       bio = COALESCE(?8, bio),
        last_at = ?6
      RETURNING muted`
-  ).bind(chatId, name, notifyName, phone, isGroup ? 1 : 0, Date.now()).first();
+  ).bind(chatId, name, notifyName, phone, isGroup ? 1 : 0, Date.now(), avatarUrl, bio).first();
   return { muted: Boolean(row?.muted) };
 }
 async function updateContacts(env, contacts) {
@@ -147,7 +149,9 @@ async function updateContacts(env, contacts) {
     const name = c.name?.trim() || null;
     const notify = c.notify?.trim() || null;
     const phone = c.phone || (c.id.includes("@s.whatsapp.net") ? c.id.split("@")[0] : null);
-    if (!name && !notify && !phone) continue;
+    const avatar = c.avatar || null;
+    const bio = c.bio || null;
+    if (!name && !notify && !phone && !avatar && !bio) continue;
     const isOwner = (v) => {
       if (!v) return false;
       const lower = v.toLowerCase().trim();
@@ -160,9 +164,11 @@ async function updateContacts(env, contacts) {
         `UPDATE chats SET
            name = COALESCE(?1, name),
            notify_name = COALESCE(?2, notify_name),
-           phone = COALESCE(?3, phone)
-         WHERE chat_id = ?4 OR chat_id = ?5`
-      ).bind(cleanName, cleanNotify, phone, c.id, phone ? `${phone}@s.whatsapp.net` : c.id)
+           phone = COALESCE(?3, phone),
+           avatar_url = COALESCE(?4, avatar_url),
+           bio = COALESCE(?5, bio)
+         WHERE chat_id = ?6 OR chat_id = ?7`
+      ).bind(cleanName, cleanNotify, phone, avatar, bio, c.id, phone ? `${phone}@s.whatsapp.net` : c.id)
     );
   }
   for (let i = 0; i < stmts.length; i += 50) {
@@ -492,7 +498,7 @@ async function handleIncoming(env, m) {
 async function handleDashboardChat(env, text) {
   const s = await getSettings(env);
   const chatId = "dashboard";
-  await upsertChat(env, chatId, "Dashboard", false);
+  await upsertChat(env, chatId, "Dashboard", null, null, false);
   const msgId = `dash:${crypto.randomUUID()}`;
   await insertMessage(env, {
     id: msgId,
@@ -769,7 +775,18 @@ async function gatewayRoutes(request, env, url) {
       if (outbound.length > 0) {
         await kvDelete(env, "gateway_outbound_queue");
       }
-      return json({ ok: true, command: command?.cmd ?? null, outbound });
+      return json({
+        ok: true,
+        command: command?.cmd ?? null,
+        commandPayload: command ?? null,
+        outbound
+      });
+    }
+    case "GET /gw/chats-to-enrich": {
+      const { results } = await env.DB.prepare(
+        "SELECT chat_id, phone FROM chats ORDER BY last_at DESC LIMIT 40"
+      ).all();
+      return json({ chats: results || [] });
     }
     case "GET /gw/outbound": {
       const outbound = await kvGet(env, "gateway_outbound_queue") || [];
@@ -912,6 +929,7 @@ async function dashboardRoutes(request, env, url) {
     case "GET /api/chats": {
       const { results } = await env.DB.prepare(
         `SELECT c.chat_id, c.name, c.notify_name, c.phone, c.is_group, c.muted, c.last_at,
+                c.avatar_url, c.bio,
                 (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.chat_id) AS message_count
          FROM chats c ORDER BY c.last_at DESC LIMIT 100`
       ).all();
@@ -1086,6 +1104,36 @@ async function dashboardRoutes(request, env, url) {
       const days = Number(url.searchParams.get("days") || 10);
       const result = await cleanupOldMedia(env, days);
       return json({ ok: true, ...result });
+    }
+    case "GET /api/avatar": {
+      const targetUrl = url.searchParams.get("url");
+      if (!targetUrl) return new Response("url is required", { status: 400 });
+      try {
+        const parsed = new URL(targetUrl);
+        if (!parsed.hostname.endsWith(".whatsapp.net") && !parsed.hostname.endsWith(".whatsapp.com")) {
+          return new Response("Invalid avatar host", { status: 400 });
+        }
+        const avatarRes = await fetch(targetUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+          }
+        });
+        if (!avatarRes.ok) {
+          return new Response(null, { status: avatarRes.status });
+        }
+        const headers = new Headers();
+        headers.set("content-type", avatarRes.headers.get("content-type") || "image/jpeg");
+        headers.set("cache-control", "public, max-age=86400, stale-while-revalidate=604800");
+        return new Response(avatarRes.body, { headers });
+      } catch {
+        return new Response("Failed to load avatar", { status: 502 });
+      }
+    }
+    case "POST /api/chat/refresh-profile": {
+      const chat = url.searchParams.get("chat");
+      if (!chat) return json({ error: "chat is required" }, 400);
+      await kvSet(env, "gateway_command", { cmd: "fetch_profile", jid: chat, at: Date.now() });
+      return json({ ok: true, queued: true });
     }
   }
   return json({ error: "Not found" }, 404);
