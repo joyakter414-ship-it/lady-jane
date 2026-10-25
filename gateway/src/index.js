@@ -566,7 +566,11 @@ async function fetchProfile(norm) {
         if (meta?.desc) bio = meta.desc;
       } else {
         const statusRes = await sock.fetchStatus(j).catch(() => null);
-        if (statusRes?.status) bio = statusRes.status;
+        if (typeof statusRes === "string" && statusRes.trim()) {
+          bio = statusRes.trim();
+        } else if (statusRes?.status && typeof statusRes.status === "string" && statusRes.status.trim()) {
+          bio = statusRes.status.trim();
+        }
       }
     }
   }
