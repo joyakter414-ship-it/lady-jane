@@ -668,13 +668,13 @@ async function onMessage(msg) {
       if (buffer && buffer.length > 0) {
         const cleanChat = (isGroup ? chatJid : phoneOf(chatJid, key.remoteJidAlt) || chatJid).replace(/[^a-zA-Z0-9_-]/g, "_");
         const objectKey = `media/${cleanChat}/${key.id}.${mediaInfo.ext}`;
-        log.info({ objectKey, size: buffer.length }, "☁️ Uploading media directly to Cloudflare R2...");
-        await brain("PUT", `/gw/media?key=${encodeURIComponent(objectKey)}&mime=${encodeURIComponent(mediaInfo.mime)}`, {
+        log.info({ objectKey, size: buffer.length }, "☁️ Uploading media to Cloudflare Brain (Google Drive / R2)...");
+        const uploadRes = await brain("PUT", `/gw/media?key=${encodeURIComponent(objectKey)}&mime=${encodeURIComponent(mediaInfo.mime)}`, {
           body: buffer,
           headers: { "content-type": mediaInfo.mime },
         });
-        mediaUrl = objectKey;
-        log.info({ objectKey }, "✅ Media uploaded to R2 successfully!");
+        mediaUrl = uploadRes?.key || objectKey;
+        log.info({ mediaUrl, storage: uploadRes?.storage || "drive" }, "✅ Media uploaded to Google Drive / cloud storage successfully!");
       }
     } catch (err) {
       log.error({ err: String(err), id: key.id }, "Failed to download/upload media to R2");

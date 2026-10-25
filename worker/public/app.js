@@ -383,14 +383,24 @@ function bubble(m) {
   // Media Player / Image / Voice
   const password = localStorage.getItem("lj_password") || "";
   if (m.media_url) {
-    const mediaSrc = `/api/media?key=${encodeURIComponent(m.media_url)}&token=${encodeURIComponent(password)}`;
+    const isGDrive = m.media_url.startsWith("gdrive:");
+    const gdriveId = isGDrive ? m.media_url.replace(/^gdrive:/, "") : "";
+    const directImageSrc = isGDrive ? `https://lh3.googleusercontent.com/d/${gdriveId}` : "";
+    const mediaProxySrc = `/api/media?key=${encodeURIComponent(m.media_url)}&token=${encodeURIComponent(password)}`;
+    const mediaSrc = isGDrive && (m.media_type === "image" || m.media_type === "sticker") ? directImageSrc : mediaProxySrc;
+
     if (m.media_type === "image" || m.media_type === "sticker") {
       const img = el("img", "msg-media-img");
       img.src = mediaSrc;
       img.alt = "WhatsApp image";
       img.loading = "lazy";
       img.style.cssText = "max-width: 100%; max-height: 320px; border-radius: 8px; display: block; margin: 6px 0; cursor: pointer; min-height: 60px;";
-      img.onclick = () => window.open(mediaSrc, "_blank");
+      img.onclick = () => window.open(isGDrive ? `https://drive.google.com/file/d/${gdriveId}/view` : mediaSrc, "_blank");
+      img.onerror = () => {
+        if (img.src !== mediaProxySrc) {
+          img.src = mediaProxySrc;
+        }
+      };
       img.onload = () => {
         const parentLog = img.closest(".chat-log");
         if (parentLog && parentLog.scrollHeight - parentLog.scrollTop <= parentLog.clientHeight + 150) {
@@ -401,9 +411,9 @@ function bubble(m) {
     } else if (m.media_type === "audio") {
       const audioContainer = el("div", "msg-media-audio-box");
       audioContainer.style.cssText = "margin: 6px 0; display: flex; flex-direction: column; gap: 4px;";
-      const audioLabel = el("div", "small-text muted", "🎤 Voice Message:");
+      const audioLabel = el("div", "small-text muted", isGDrive ? "🎤 Voice Message (Google Drive):" : "🎤 Voice Message:");
       const audio = el("audio", "msg-media-audio");
-      audio.src = mediaSrc;
+      audio.src = mediaProxySrc;
       audio.controls = true;
       audio.preload = "metadata";
       audio.style.cssText = "width: 100%; min-width: 230px; height: 38px;";
@@ -411,14 +421,14 @@ function bubble(m) {
       b.append(audioContainer);
     } else if (m.media_type === "video") {
       const video = el("video", "msg-media-video");
-      video.src = mediaSrc;
+      video.src = mediaProxySrc;
       video.controls = true;
       video.preload = "metadata";
       video.style.cssText = "max-width: 100%; max-height: 320px; border-radius: 8px; display: block; margin: 6px 0;";
       b.append(video);
     } else if (m.media_type === "document") {
-      const docLink = el("a", "msg-media-doc", `📄 Download ${m.content || "Document"}`);
-      docLink.href = mediaSrc;
+      const docLink = el("a", "msg-media-doc", `📄 Download ${m.content || "Document"} ${isGDrive ? "(Drive)" : ""}`);
+      docLink.href = isGDrive ? `https://drive.google.com/file/d/${gdriveId}/view` : mediaProxySrc;
       docLink.target = "_blank";
       docLink.style.cssText = "display: inline-block; margin: 6px 0; color: var(--gold-2); text-decoration: underline; font-weight: 500;";
       b.append(docLink);
@@ -1044,16 +1054,41 @@ $("#settings-form").addEventListener("submit", async (e) => {
   }
 });
 
-$("#btn-clean-media")?.addEventListener("click", async () => {
-  const btn = $("#btn-clean-media");
-  const status = $("#clean-media-status");
+$("#btn-migrate-gdrive")?.addEventListener("click", async () => {
+  const btn = $("#btn-migrate-gdrive");
+  const status = $("#gdrive-action-status");
   btn.disabled = true;
-  status.textContent = "Checking files older than 10 days…";
+  status.textContent = "Migrating media from R2 to Google Drive…";
   try {
-    const res = await api("POST", "/api/media/cleanup?days=10");
-    status.textContent = `Cleaned ${res.deletedCount || 0} expired media file(s).`;
+    let totalMigrated = 0;
+    while (true) {
+      const res = await api("POST", "/api/media/migrate-to-gdrive");
+      totalMigrated += (res.migrated || 0);
+      if (!res.remaining || res.remaining === 0) {
+        status.textContent = `✅ Complete! Migrated ${totalMigrated} file(s) to Google Drive. R2 is clean!`;
+        break;
+      }
+      status.textContent = `Migrated ${totalMigrated} file(s)… ${res.remaining} remaining…`;
+      await new Promise((r) => setTimeout(r, 600));
+    }
   } catch (err) {
-    status.textContent = `Failed: ${err.message}`;
+    status.textContent = `⚠️ Migration error: ${err.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$("#btn-purge-r2")?.addEventListener("click", async () => {
+  if (!confirm("Are you sure you want to completely purge and clear all media objects in R2 storage? WhatsApp session backup will be preserved.")) return;
+  const btn = $("#btn-purge-r2");
+  const status = $("#gdrive-action-status");
+  btn.disabled = true;
+  status.textContent = "Purging R2 storage…";
+  try {
+    const res = await api("POST", "/api/media/purge-r2");
+    status.textContent = `🧹 R2 Purged! Deleted ${res.purgedObjects || 0} object(s). R2 space is now 0 bytes!`;
+  } catch (err) {
+    status.textContent = `⚠️ Purge error: ${err.message}`;
   } finally {
     btn.disabled = false;
   }

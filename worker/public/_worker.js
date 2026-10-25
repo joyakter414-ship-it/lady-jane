@@ -106,17 +106,17 @@ async function markMessageDeleted(env, chatId, targetId, deletedBy, deletedAt) {
 async function cleanupOldMedia(env, days = 10) {
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1e3;
   const { results } = await env.DB.prepare(
-    "SELECT id, media_url FROM messages WHERE created_at < ? AND media_url IS NOT NULL LIMIT 100"
+    "SELECT id, media_url FROM messages WHERE created_at < ? AND media_url IS NOT NULL AND media_url NOT LIKE 'gdrive:%' LIMIT 100"
   ).bind(cutoff).all();
   if (!results || results.length === 0) return { deletedCount: 0 };
   for (const item of results) {
-    if (item.media_url) {
+    if (item.media_url && !item.media_url.startsWith("gdrive:")) {
       await env.BUCKET.delete(item.media_url).catch(() => {
       });
     }
   }
   await env.DB.prepare(
-    "UPDATE messages SET media_url = NULL WHERE created_at < ? AND media_url IS NOT NULL"
+    "UPDATE messages SET media_url = NULL WHERE created_at < ? AND media_url IS NOT NULL AND media_url NOT LIKE 'gdrive:%'"
   ).bind(cutoff).run();
   return { deletedCount: results.length };
 }
@@ -564,6 +564,156 @@ async function generateReply(env, s, rules, c) {
   }
 }
 
+// worker/src/gdrive.ts
+var cachedAccessToken = null;
+async function getGDriveConfig(env) {
+  const cfg = await kvGet(env, "gdrive_config").catch(() => null);
+  if (cfg && cfg.enabled && cfg.refreshToken) {
+    return cfg;
+  }
+  return null;
+}
+async function getGDriveAccessToken(env) {
+  const cfg = await getGDriveConfig(env);
+  if (!cfg) return null;
+  if (cachedAccessToken && cachedAccessToken.expiresAt > Date.now() + 6e4) {
+    return cachedAccessToken.token;
+  }
+  const res = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      client_id: cfg.clientId,
+      client_secret: cfg.clientSecret,
+      refresh_token: cfg.refreshToken,
+      grant_type: "refresh_token"
+    })
+  });
+  if (!res.ok) {
+    const errText = await res.text();
+    console.error("GDrive OAuth token refresh failed:", res.status, errText);
+    return null;
+  }
+  const data = await res.json();
+  if (!data.access_token) return null;
+  cachedAccessToken = {
+    token: data.access_token,
+    expiresAt: Date.now() + (data.expires_in || 3600) * 1e3
+  };
+  return data.access_token;
+}
+async function uploadToGoogleDrive(env, filename, mime, buffer) {
+  const cfg = await getGDriveConfig(env);
+  if (!cfg) return null;
+  const accessToken = await getGDriveAccessToken(env);
+  if (!accessToken) return null;
+  const boundary = "-------LadyJaneDriveBoundary314159";
+  const delimiter = `\r
+--${boundary}\r
+`;
+  const closeDelimiter = `\r
+--${boundary}--`;
+  const metadata = {
+    name: filename,
+    mimeType: mime
+  };
+  if (cfg.folderId) {
+    metadata.parents = [cfg.folderId];
+  }
+  const metaPart = `${delimiter}Content-Type: application/json; charset=UTF-8\r
+\r
+${JSON.stringify(metadata)}\r
+`;
+  const mediaHeader = `${delimiter}Content-Type: ${mime}\r
+Content-Transfer-Encoding: binary\r
+\r
+`;
+  const metaBytes = new TextEncoder().encode(metaPart);
+  const mediaHeaderBytes = new TextEncoder().encode(mediaHeader);
+  const closeBytes = new TextEncoder().encode(closeDelimiter);
+  const bodyBytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  const fullLength = metaBytes.length + mediaHeaderBytes.length + bodyBytes.length + closeBytes.length;
+  const combined = new Uint8Array(fullLength);
+  let offset = 0;
+  combined.set(metaBytes, offset);
+  offset += metaBytes.length;
+  combined.set(mediaHeaderBytes, offset);
+  offset += mediaHeaderBytes.length;
+  combined.set(bodyBytes, offset);
+  offset += bodyBytes.length;
+  combined.set(closeBytes, offset);
+  const uploadRes = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": `multipart/related; boundary=${boundary}`
+    },
+    body: combined
+  });
+  if (!uploadRes.ok) {
+    const errText = await uploadRes.text();
+    console.error("GDrive upload failed:", uploadRes.status, errText);
+    return null;
+  }
+  const fileData = await uploadRes.json();
+  if (!fileData?.id) return null;
+  fetch(`https://www.googleapis.com/drive/v3/files/${fileData.id}/permissions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      role: "reader",
+      type: "anyone"
+    })
+  }).catch(() => {
+  });
+  return {
+    id: fileData.id,
+    viewUrl: `https://lh3.googleusercontent.com/d/${fileData.id}`
+  };
+}
+async function streamFromGoogleDrive(env, fileId, rangeHeader) {
+  const accessToken = await getGDriveAccessToken(env);
+  if (!accessToken) {
+    return new Response("Google Drive authorization unavailable", { status: 503 });
+  }
+  const headers = {
+    Authorization: `Bearer ${accessToken}`
+  };
+  if (rangeHeader) {
+    headers["Range"] = rangeHeader;
+  }
+  const driveRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+    headers
+  });
+  if (!driveRes.ok && driveRes.status !== 206) {
+    return new Response("Failed to fetch media from Google Drive", { status: driveRes.status });
+  }
+  const responseHeaders = new Headers();
+  const forwardHeaders = [
+    "content-type",
+    "content-length",
+    "content-range",
+    "accept-ranges",
+    "etag",
+    "last-modified"
+  ];
+  for (const h of forwardHeaders) {
+    const val = driveRes.headers.get(h);
+    if (val) responseHeaders.set(h, val);
+  }
+  if (!responseHeaders.has("accept-ranges")) {
+    responseHeaders.set("accept-ranges", "bytes");
+  }
+  responseHeaders.set("cache-control", "public, max-age=31536000, immutable");
+  return new Response(driveRes.body, {
+    status: driveRes.status,
+    headers: responseHeaders
+  });
+}
+
 // worker/src/index.ts
 var SESSION_KEY = "whatsapp/session.bin";
 var SESSION_KV_KEY = "whatsapp_session_b64";
@@ -658,10 +808,25 @@ async function gatewayRoutes(request, env, url) {
       const mime = url.searchParams.get("mime") || request.headers.get("content-type") || "application/octet-stream";
       if (!mediaKey) return json({ error: "key is required" }, 400);
       const buf = await request.arrayBuffer();
+      const filename = mediaKey.split("/").pop() || "media_file";
+      const gdriveRes = await uploadToGoogleDrive(env, filename, mime, buf).catch((err) => {
+        console.error("GDrive upload error in PUT /gw/media:", err);
+        return null;
+      });
+      if (gdriveRes?.id) {
+        return json({
+          ok: true,
+          key: `gdrive:${gdriveRes.id}`,
+          gdriveId: gdriveRes.id,
+          url: gdriveRes.viewUrl,
+          storage: "gdrive",
+          size: buf.byteLength
+        });
+      }
       await env.BUCKET.put(mediaKey, buf, {
         httpMetadata: { contentType: mime }
       });
-      return json({ ok: true, key: mediaKey, size: buf.byteLength });
+      return json({ ok: true, key: mediaKey, storage: "r2", size: buf.byteLength });
     }
     case "DELETE /gw/session": {
       await Promise.all([
@@ -843,9 +1008,22 @@ async function dashboardRoutes(request, env, url) {
       await deleteRule(env, id);
       return json({ ok: true });
     }
+    case "GET /api/gdrive/status": {
+      const cfg = await getGDriveConfig(env);
+      return json({
+        enabled: Boolean(cfg?.enabled && cfg?.refreshToken),
+        account: cfg?.account || "Unknown",
+        folderName: cfg?.folderName || "Lady Jane WhatsApp Media",
+        folderId: cfg?.folderId || null
+      });
+    }
     case "GET /api/media": {
-      const mediaKey = url.searchParams.get("key");
+      const mediaKey = url.searchParams.get("key") || url.searchParams.get("gdrive");
       if (!mediaKey) return new Response("key is required", { status: 400 });
+      if (mediaKey.startsWith("gdrive:")) {
+        const fileId = mediaKey.replace(/^gdrive:/, "");
+        return await streamFromGoogleDrive(env, fileId, request.headers.get("range"));
+      }
       const obj = await env.BUCKET.get(mediaKey);
       if (!obj) return new Response("Media not found or expired", { status: 404 });
       const headers = new Headers();
@@ -853,6 +1031,56 @@ async function dashboardRoutes(request, env, url) {
       headers.set("etag", obj.httpEtag);
       headers.set("cache-control", "public, max-age=86400");
       return new Response(obj.body, { headers });
+    }
+    case "POST /api/media/migrate-to-gdrive": {
+      const { results } = await env.DB.prepare(
+        "SELECT id, media_url, media_type, media_mime FROM messages WHERE media_url IS NOT NULL AND media_url NOT LIKE 'gdrive:%' LIMIT 20"
+      ).all();
+      if (!results || results.length === 0) {
+        return json({ ok: true, migrated: 0, remaining: 0, note: "All media already migrated to Google Drive!" });
+      }
+      let count = 0;
+      for (const item of results) {
+        try {
+          const r2Obj = await env.BUCKET.get(item.media_url);
+          if (r2Obj) {
+            const buf = await r2Obj.arrayBuffer();
+            const filename = item.media_url.split("/").pop() || `media_${item.id}`;
+            const gdriveRes = await uploadToGoogleDrive(env, filename, item.media_mime || "application/octet-stream", buf);
+            if (gdriveRes?.id) {
+              await env.DB.prepare("UPDATE messages SET media_url = ? WHERE id = ?").bind(`gdrive:${gdriveRes.id}`, item.id).run();
+              await env.BUCKET.delete(item.media_url).catch(() => {
+              });
+              count++;
+            }
+          } else {
+            await env.DB.prepare("UPDATE messages SET media_url = NULL WHERE id = ?").bind(item.id).run();
+          }
+        } catch (e) {
+          console.error("Migration error for item:", item.id, e);
+        }
+      }
+      const { count: remaining } = await env.DB.prepare(
+        "SELECT COUNT(*) as count FROM messages WHERE media_url IS NOT NULL AND media_url NOT LIKE 'gdrive:%'"
+      ).first() || { count: 0 };
+      return json({ ok: true, migrated: count, remaining });
+    }
+    case "POST /api/media/purge-r2": {
+      let totalDeleted = 0;
+      let truncated = true;
+      let cursor = void 0;
+      while (truncated) {
+        const list = await env.BUCKET.list({ cursor, limit: 500 });
+        const keys = list.objects.map((o) => o.key).filter((k) => k !== SESSION_KEY);
+        if (keys.length > 0) {
+          await env.BUCKET.delete(keys).catch(() => {
+          });
+          totalDeleted += keys.length;
+        }
+        truncated = list.truncated;
+        cursor = list.truncated ? list.cursor : void 0;
+      }
+      return json({ ok: true, purgedObjects: totalDeleted, note: "R2 media space completely cleared! 0 bytes used." });
     }
     case "POST /api/media/cleanup": {
       const days = Number(url.searchParams.get("days") || 10);

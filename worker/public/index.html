@@ -238,15 +238,17 @@
         </fieldset>
 
         <fieldset>
-          <legend>Cloud Media Storage & Retention (10-Day Purge)</legend>
+          <legend>Google Drive Storage (5TB Lifetime Access)</legend>
           <div style="font-size: 13px; color: var(--muted); line-height: 1.5;">
-            Voice messages, photos, and videos sent or received on WhatsApp are saved to Cloudflare R2 immediately.
-            To keep cloud storage light, heavy media files older than <b>10 days</b> are automatically purged while preserving all text and message history in Conversations.
+            Connected: <b style="color: var(--gold-2);">joyakter414@gmail.com</b> (5 TB Cloud Storage).<br>
+            All photos, videos, and voice messages are saved directly into your Google Drive folder <b>Lady Jane WhatsApp Media</b> with <b>lifetime access</b> (no 10-day deletion). R2 space is kept 100% free!
           </div>
-          <div style="margin-top: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-            <button type="button" id="btn-clean-media" class="ghost small">🧹 Clean Media Older than 10 Days Now</button>
-            <span id="clean-media-status" class="small-text muted"></span>
+          <div style="margin-top: 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+            <button type="button" id="btn-migrate-gdrive" class="ghost small">☁️ Migrate All R2 Media to Google Drive</button>
+            <button type="button" id="btn-purge-r2" class="ghost small" style="border-color: #ef4444; color: #ef4444;">🗑️ Clear R2 Storage (0 Bytes)</button>
+            <a href="https://drive.google.com/drive/folders/10a1BDnC6hfucCTgJrymgtu_mlGgcj4MS" target="_blank" class="ghost small" style="text-decoration: none;">📂 Open Drive Folder</a>
           </div>
+          <div id="gdrive-action-status" class="small-text muted" style="margin-top: 8px;"></div>
         </fieldset>
 
         <div class="actions">

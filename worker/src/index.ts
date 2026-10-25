@@ -2,6 +2,7 @@ import type { AppEnv } from "./env";
 import { handleDashboardChat, handleIncoming, type IncomingMessage } from "./brain";
 import { cleanupOldMedia, createRule, deleteRule, getRules, insertMessage, kvDelete, kvGet, kvSet, updateContacts, updateRule, upsertChat } from "./db";
 import { getSettings, MODELS, saveSettings, type Settings } from "./settings";
+import { getGDriveConfig, uploadToGoogleDrive, streamFromGoogleDrive } from "./gdrive";
 
 const SESSION_KEY = "whatsapp/session.bin";
 const SESSION_KV_KEY = "whatsapp_session_b64";
@@ -113,10 +114,30 @@ async function gatewayRoutes(request: Request, env: AppEnv, url: URL): Promise<R
       const mime = url.searchParams.get("mime") || request.headers.get("content-type") || "application/octet-stream";
       if (!mediaKey) return json({ error: "key is required" }, 400);
       const buf = await request.arrayBuffer();
+
+      // 1. Direct upload to Google Drive for permanent lifetime storage:
+      const filename = mediaKey.split("/").pop() || "media_file";
+      const gdriveRes = await uploadToGoogleDrive(env, filename, mime, buf).catch((err) => {
+        console.error("GDrive upload error in PUT /gw/media:", err);
+        return null;
+      });
+
+      if (gdriveRes?.id) {
+        return json({
+          ok: true,
+          key: `gdrive:${gdriveRes.id}`,
+          gdriveId: gdriveRes.id,
+          url: gdriveRes.viewUrl,
+          storage: "gdrive",
+          size: buf.byteLength,
+        });
+      }
+
+      // 2. Fallback to Cloudflare R2 if Google Drive is not configured:
       await env.BUCKET.put(mediaKey, buf, {
         httpMetadata: { contentType: mime }
       });
-      return json({ ok: true, key: mediaKey, size: buf.byteLength });
+      return json({ ok: true, key: mediaKey, storage: "r2", size: buf.byteLength });
     }
     case "DELETE /gw/session": {
       await Promise.all([
@@ -312,9 +333,25 @@ async function dashboardRoutes(request: Request, env: AppEnv, url: URL): Promise
       await deleteRule(env, id);
       return json({ ok: true });
     }
+    case "GET /api/gdrive/status": {
+      const cfg = await getGDriveConfig(env);
+      return json({
+        enabled: Boolean(cfg?.enabled && cfg?.refreshToken),
+        account: cfg?.account || "Unknown",
+        folderName: cfg?.folderName || "Lady Jane WhatsApp Media",
+        folderId: cfg?.folderId || null,
+      });
+    }
     case "GET /api/media": {
-      const mediaKey = url.searchParams.get("key");
+      const mediaKey = url.searchParams.get("key") || url.searchParams.get("gdrive");
       if (!mediaKey) return new Response("key is required", { status: 400 });
+
+      // Direct streaming from Google Drive (Voice notes, videos, audio, documents, fallback images)
+      if (mediaKey.startsWith("gdrive:")) {
+        const fileId = mediaKey.replace(/^gdrive:/, "");
+        return await streamFromGoogleDrive(env, fileId, request.headers.get("range"));
+      }
+
       const obj = await env.BUCKET.get(mediaKey);
       if (!obj) return new Response("Media not found or expired", { status: 404 });
       const headers = new Headers();
@@ -322,6 +359,63 @@ async function dashboardRoutes(request: Request, env: AppEnv, url: URL): Promise
       headers.set("etag", obj.httpEtag);
       headers.set("cache-control", "public, max-age=86400");
       return new Response(obj.body, { headers });
+    }
+    case "POST /api/media/migrate-to-gdrive": {
+      const { results } = await env.DB.prepare(
+        "SELECT id, media_url, media_type, media_mime FROM messages WHERE media_url IS NOT NULL AND media_url NOT LIKE 'gdrive:%' LIMIT 20"
+      ).all<{ id: string; media_url: string; media_type: string; media_mime: string }>();
+
+      if (!results || results.length === 0) {
+        return json({ ok: true, migrated: 0, remaining: 0, note: "All media already migrated to Google Drive!" });
+      }
+
+      let count = 0;
+      for (const item of results) {
+        try {
+          const r2Obj = await env.BUCKET.get(item.media_url);
+          if (r2Obj) {
+            const buf = await r2Obj.arrayBuffer();
+            const filename = item.media_url.split("/").pop() || `media_${item.id}`;
+            const gdriveRes = await uploadToGoogleDrive(env, filename, item.media_mime || "application/octet-stream", buf);
+            if (gdriveRes?.id) {
+              await env.DB.prepare("UPDATE messages SET media_url = ? WHERE id = ?")
+                .bind(`gdrive:${gdriveRes.id}`, item.id)
+                .run();
+              await env.BUCKET.delete(item.media_url).catch(() => {});
+              count++;
+            }
+          } else {
+            // Object missing in R2, remove dead media_url reference
+            await env.DB.prepare("UPDATE messages SET media_url = NULL WHERE id = ?").bind(item.id).run();
+          }
+        } catch (e) {
+          console.error("Migration error for item:", item.id, e);
+        }
+      }
+
+      const { count: remaining } = (await env.DB.prepare(
+        "SELECT COUNT(*) as count FROM messages WHERE media_url IS NOT NULL AND media_url NOT LIKE 'gdrive:%'"
+      ).first<{ count: number }>()) || { count: 0 };
+
+      return json({ ok: true, migrated: count, remaining });
+    }
+    case "POST /api/media/purge-r2": {
+      let totalDeleted = 0;
+      let truncated = true;
+      let cursor: string | undefined = undefined;
+
+      while (truncated) {
+        const list = await env.BUCKET.list({ cursor, limit: 500 });
+        const keys = list.objects.map((o) => o.key).filter((k) => k !== SESSION_KEY);
+        if (keys.length > 0) {
+          await env.BUCKET.delete(keys).catch(() => {});
+          totalDeleted += keys.length;
+        }
+        truncated = list.truncated;
+        cursor = list.truncated ? list.cursor : undefined;
+      }
+
+      return json({ ok: true, purgedObjects: totalDeleted, note: "R2 media space completely cleared! 0 bytes used." });
     }
     case "POST /api/media/cleanup": {
       const days = Number(url.searchParams.get("days") || 10);

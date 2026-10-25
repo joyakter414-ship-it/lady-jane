@@ -194,12 +194,13 @@ export async function markMessageDeleted(
 }
 
 /**
- * Automatically purge heavy files (images, audio, video) older than X days from Cloudflare R2
+ * Automatically purge legacy heavy files older than X days from Cloudflare R2 only.
+ * Media hosted in Google Drive (gdrive:*) has lifetime access and is NEVER deleted!
  */
 export async function cleanupOldMedia(env: AppEnv, days = 10): Promise<{ deletedCount: number }> {
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
   const { results } = await env.DB.prepare(
-    "SELECT id, media_url FROM messages WHERE created_at < ? AND media_url IS NOT NULL LIMIT 100"
+    "SELECT id, media_url FROM messages WHERE created_at < ? AND media_url IS NOT NULL AND media_url NOT LIKE 'gdrive:%' LIMIT 100"
   )
     .bind(cutoff)
     .all<{ id: string; media_url: string }>();
@@ -207,13 +208,13 @@ export async function cleanupOldMedia(env: AppEnv, days = 10): Promise<{ deleted
   if (!results || results.length === 0) return { deletedCount: 0 };
 
   for (const item of results) {
-    if (item.media_url) {
+    if (item.media_url && !item.media_url.startsWith("gdrive:")) {
       await env.BUCKET.delete(item.media_url).catch(() => {});
     }
   }
 
   await env.DB.prepare(
-    "UPDATE messages SET media_url = NULL WHERE created_at < ? AND media_url IS NOT NULL"
+    "UPDATE messages SET media_url = NULL WHERE created_at < ? AND media_url IS NOT NULL AND media_url NOT LIKE 'gdrive:%'"
   )
     .bind(cutoff)
     .run();
